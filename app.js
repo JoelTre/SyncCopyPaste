@@ -48,18 +48,56 @@ try {
 if (valid(supplied)) $('connecting-overlay').hidden = false;
 const pairURL = new URL(location.href); pairURL.hash = `${credentials.code}:${credentials.passcode}`;
 $('pair-link').href = pairURL.href; $('pair-link').textContent = pairURL.href;
-$('room-code').textContent = credentials.code; $('passcode').textContent = credentials.passcode;
+$('room-code').textContent = credentials.code.replaceAll('-', ' '); $('passcode').textContent = credentials.passcode;
+
+let manualPairTimer;
+function tryManualPairing() {
+  clearTimeout(manualPairTimer);
+  const roomCode = $('manual-room').value.trim().toLowerCase().replace(/[\s-]+/g, '-');
+  const passcode = $('manual-passcode').value;
+  if (!valid({code:roomCode, passcode})) return;
+  manualPairTimer = setTimeout(() => {
+    const url = new URL(location.href);
+    url.hash = `${roomCode}:${passcode}`;
+    location.replace(url.href);
+    location.reload();
+  }, 500);
+}
+$('manual-room').addEventListener('input', tryManualPairing);
+$('manual-room').addEventListener('keydown', event => {
+  const input = event.currentTarget;
+  if (event.key === 'ArrowRight' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && input.selectionStart === input.value.length && input.selectionEnd === input.value.length) {
+    event.preventDefault();
+    $('manual-passcode').focus();
+  }
+});
+$('manual-passcode').addEventListener('input', tryManualPairing);
+
 let room, sendControl, sendFile, connected = false, peerId = null, epoch = 0, noticeTimer, reconnectTimer = null;
-let initialConnectionTimedOut = false;
+let initialConnectionTimedOut = false, turnUnavailable = false;
+let connectionStage = 'Preparing the connection…';
+let showConnectionDetail = false;
+function setConnectionStage(stage) {
+  connectionStage = stage;
+  if (showConnectionDetail) $('connecting-detail').textContent = stage;
+}
+const connectionDetailTimer = valid(supplied) ? setTimeout(() => {
+  showConnectionDetail = true;
+  $('connecting-detail').textContent = connectionStage;
+  $('connecting-detail').hidden = false;
+}, 5000) : null;
 const initialConnectionTimer = valid(supplied) ? setTimeout(() => {
   if (connected) return;
   initialConnectionTimedOut = true;
   room?.leave();
   $('connecting-spinner').hidden = true;
-  $('connecting-text').textContent = 'Could not connect. Make sure the other device has the app open.';
+  $('connecting-detail').hidden = true;
+  $('connecting-text').textContent = turnUnavailable ? 'Could not connect. The relay service is unavailable; try again later and make sure the other device has the app open.' : 'Could not connect. Make sure the other device has the app open.';
   $('retry-connection').hidden = false;
-}, 5000) : null;
+  $('cancel-connection').hidden = false;
+}, 15000) : null;
 $('retry-connection').onclick = () => location.reload();
+$('cancel-connection').onclick = () => location.replace(location.pathname + location.search);
 const files = new Map(), incoming = new Set(), discarded = new Set();
 function notify(message) { $('notice').textContent = message; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => $('notice').textContent = '', 6000); }
 function deviceType() {
@@ -77,7 +115,7 @@ function formatSize(size) { if (size < 1024) return `${size} B`; if (size < 1048
 function iconFor(file) { if (file.type.startsWith('video/')) return 'fa-file-video'; if (file.type.startsWith('audio/')) return 'fa-file-audio'; if (file.type.startsWith('image/')) return 'fa-file-image'; if (/pdf/i.test(file.type) || /\.pdf$/i.test(file.name)) return 'fa-file-pdf'; if (/zip|compressed|archive/i.test(file.type) || /\.(zip|rar|7z|tar|gz)$/i.test(file.name)) return 'fa-file-zipper'; if (/text|json|javascript/i.test(file.type) || /\.(txt|md|js|html|css|csv)$/i.test(file.name)) return 'fa-file-lines'; return 'fa-file'; }
 function render() {
   const list = $('file-list'); list.replaceChildren();
-  $('empty').hidden = files.size > 0; $('file-count').textContent = `${files.size} ${files.size === 1 ? 'file' : 'files'}`; $('clear').disabled = files.size === 0;
+  $('empty').hidden = files.size > 0; $('file-count').textContent = `${files.size} ${files.size === 1 ? 'file' : 'files'}`; $('clear').disabled = files.size === 0; $('download-all').disabled = files.size === 0;
   for (const {file, url, status} of files.values()) {
     const card = document.createElement('article'); card.className = 'file-card';
     card.addEventListener('click', event => { if (!event.target.closest('button')) void openPreview(file.name, async () => file); });
@@ -158,6 +196,7 @@ $('dropzone').addEventListener('drop',e => {
   const text = dropped.getData('text/plain');
   if (text) void transfer(new File([text], 'Dropped text.txt', {type:'text/plain'}));
 });
+$('download-all').onclick = () => { for (const {file, url} of files.values()) { const a = document.createElement('a'); a.href = url; a.download = file.name; a.click(); } };
 $('clear').onclick = () => { if (!connected) return; clearFiles(); sendControl({type:'clear'}); };
 $('copy-link').onclick = async () => { try { await navigator.clipboard.writeText(pairURL.href); notify('Connection link copied.'); } catch { notify('Select the link to copy it.'); } };
 let shareAppTimer;
@@ -199,14 +238,34 @@ function setTheme(theme) { document.documentElement.dataset.theme = theme; docum
 try { setTheme(localStorage.getItem('synccopypaste-theme') || 'light'); } catch { setTheme('light'); }
 $('theme-button').onclick = () => { setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); menu.hidden = true; $('menu-button').setAttribute('aria-expanded','false'); };
 async function start() {
-  try { const {default: QRCode} = await import('https://esm.run/qrcode'); const img = document.createElement('img'); img.src = await QRCode.toDataURL(pairURL.href,{width:384,margin:1}); img.alt = 'Scan to open the connection link'; $('qr').replaceChildren(img); } catch { $('qr').textContent = 'Use the link below'; }
+  void (async () => {
+    try { const {default: QRCode} = await import('https://esm.run/qrcode'); const img = document.createElement('img'); img.src = await QRCode.toDataURL(pairURL.href,{width:384,margin:1}); img.alt = 'Scan to open the connection link'; $('qr').replaceChildren(img); } catch { $('qr').textContent = 'Use the link below'; }
+  })();
   try {
+    setConnectionStage('Getting network settings…');
     let iceServers = [{urls:'stun:stun.l.google.com:19302'}];
-    try { const response = await fetch('https://synccopypaste.joel-tregurtha.workers.dev', {signal:AbortSignal.timeout(3500)}); if (!response.ok) throw new Error(`ICE broker: ${response.status}`); const body = await response.json(); const servers = Array.isArray(body) ? body : body.iceServers; if (!Array.isArray(servers) || !servers.length) throw new Error('Invalid ICE server response'); iceServers = servers; } catch (error) { console.warn('Using public STUN fallback:',error); }
-    const {joinRoom} = await import('https://esm.run/trystero');
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await fetch('https://synccopypaste.joel-tregurtha.workers.dev', {signal:AbortSignal.timeout(4000)});
+        if (!response.ok) throw new Error(`ICE broker: ${response.status}`);
+        const body = await response.json();
+        const servers = Array.isArray(body) ? body : body.iceServers;
+        if (!Array.isArray(servers) || !servers.length) throw new Error('Invalid ICE server response');
+        const hasTurn = servers.some(server => (Array.isArray(server.urls) ? server.urls : [server.urls]).some(url => typeof url === 'string' && /^turns?:/i.test(url)));
+        if (body.turnAvailable === false || !hasTurn) throw new Error('TURN unavailable');
+        iceServers = servers; turnUnavailable = false; break;
+      } catch (error) {
+        turnUnavailable = true;
+        console.warn(`ICE settings attempt ${attempt} failed:`, error.message);
+      }
+    }
+    if (turnUnavailable) console.warn('TURN unavailable; using public STUN fallback.');
+    setConnectionStage('Loading connection services…');
+    const {joinRoom} = await import('https://esm.run/trystero@0.27.0');
     const roomCode = selectedDevice ? await digest('synccopypaste-room-v1:' + selectedDevice.secret) : credentials.code;
     const password = selectedDevice ? await digest('synccopypaste-password-v1:' + selectedDevice.secret) : credentials.passcode;
     if (initialConnectionTimedOut) return;
+    setConnectionStage('Finding the other device and establishing a secure connection…');
     room = joinRoom({appId:'synccopypaste-v1',password,maxUsers:2,rtcConfig:{iceServers}},roomCode);
     const control = room.makeAction('control'), fileAction = room.makeAction('file'), folderFileAction = room.makeAction('folder-file');
     folderFileAction.onMessage((data, context) => folders.onBytes(data, context));
@@ -234,6 +293,8 @@ async function start() {
       if (initialConnectionTimedOut) return;
       const id = typeof context === 'string' ? context : context.peerId, reconnecting = reconnectTimer !== null;
       clearTimeout(initialConnectionTimer);
+      clearTimeout(connectionDetailTimer);
+      $('connecting-detail').hidden = true;
       clearTimeout(reconnectTimer); reconnectTimer = null; peerId = id; connected = true;
       $('connection-lost').hidden = true; $('connecting-overlay').hidden = true;
       if (!selectedDevice) { $('remembered').hidden = true; $('pairing').hidden = true; $('workspace').hidden = false; }
@@ -241,7 +302,7 @@ async function start() {
       if (!reconnecting) $('peer-name').textContent = 'Connected to device';
       sendControl({type:'hello',device:deviceType(),identity,contribution},id); folders.join();
       if (reconnecting) void resendSharedFiles(id);
-    });
+    }, {replay:true});
     room.onPeerLeave(context => {
       const id = typeof context === 'string' ? context : context.peerId;
       if (id !== peerId) return;
@@ -256,11 +317,23 @@ async function start() {
         return;
       }
       disableClipboard(); folders.leave(); clearFiles(); $('workspace').hidden = true; $('pairing').hidden = !!selectedDevice; renderDevices();
-      $('connection-lost').querySelector('span').textContent = 'Connection lost'; $('connection-lost').hidden = false; $('connection-status').textContent = 'Device disconnected. Waiting for another device…'; notify('The other device disconnected.');
+      $('connection-lost').querySelector('span').textContent = 'Connection lost'; $('connection-lost').hidden = false; $('connection-status').textContent = 'Waiting for another device…'; notify('The other device disconnected.');
     });
     $('connection-status').textContent = 'Waiting for another device…';
   } catch (error) { if (!initialConnectionTimedOut && !valid(supplied)) { $('connecting-overlay').hidden = true; $('connection-status').textContent = 'Could not start the connection. Reload to try again.'; } console.error(error); }
 }
+let betaEnabled = false;
+try { betaEnabled = localStorage.getItem('synccopypaste-beta-features') === 'true'; } catch {}
+$('beta-features').checked = betaEnabled;
+$('clipboard-option').hidden = !betaEnabled;
+$('beta-description').hidden = !betaEnabled;
+$('beta-features').onchange = () => {
+  betaEnabled = $('beta-features').checked;
+  $('clipboard-option').hidden = !betaEnabled;
+  $('beta-description').hidden = !betaEnabled;
+  try { localStorage.setItem('synccopypaste-beta-features', String(betaEnabled)); } catch {}
+  if (!betaEnabled && clipboardEnabled) { disableClipboard(); if (connected) sendControl({type:'clipboard-sync',enabled:false}); }
+};
 let clipboardEnabled = false, peerClipboardEnabled = false, clipboardTimer, clipboardBusy = false, lastClipboardHash = '', pendingClipboard = null, clipboardWriteBusy = false;
 const clipboardStatus = $('clipboard-status');
 function updateClipboardStatus(message = '') {
@@ -315,7 +388,7 @@ async function retryClipboardWrite() {
   finally { clipboardWriteBusy = false; }
 }
 async function enableClipboard(fromClick) {
-  if (clipboardEnabled) return;
+  if (!betaEnabled || clipboardEnabled) return;
   if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) {
     updateClipboardStatus('Automatic clipboard sync is unavailable on iPhone and iPad. Use Paste under Shared files to send clipboard content, then Copy on the other device.');
     return;
@@ -329,6 +402,7 @@ async function enableClipboard(fromClick) {
     // Calling read directly in the click handler lets the browser request access.
     const initial = navigator.clipboard.read();
     await initial;
+    if (!betaEnabled) return;
     clipboardEnabled = true; lastClipboardHash = '';
     $('sync-clipboard').setAttribute('aria-pressed','true'); $('sync-clipboard').innerHTML = '<i class="fa-solid fa-check"></i> Clipboard sync on';
     sendControl({type:'clipboard-sync',enabled:true}); updateClipboardStatus();

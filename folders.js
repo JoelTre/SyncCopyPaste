@@ -5,6 +5,48 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
   let root = null, remote = null, currentPath = [], entries = [], view = 'list', sort = 'name', direction = 1, activeRequest = 0, drag = null;
   let searchTimer, remoteGeneration = 0, pathErrorTimer, pathErrorHideTimer;
   const pending = new Map();
+  let selectionMode = false, downloadingSelection = false;
+  const selected = new Map(), selectionKey = item => JSON.stringify(item.path);
+  let thumbnailObserver, thumbnailGeneration = 0, thumbnailActive = 0;
+  let thumbnailQueue = [], thumbnailURLs = [];
+  const isImage = item => item.kind === 'file' && ((item.type || '').startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(item.name));
+  function clearThumbnails() {
+    thumbnailGeneration++; thumbnailObserver?.disconnect(); thumbnailQueue = [];
+    for (const url of thumbnailURLs) URL.revokeObjectURL(url);
+    thumbnailURLs = [];
+  }
+  async function makeThumbnail(file) {
+    const url = URL.createObjectURL(file);
+    try {
+      const image = new Image(); image.src = url;
+      await image.decode();
+      const scale = Math.min(1, 240 / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext('2d'); if (!context) throw new Error('Thumbnail unavailable.');
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .7));
+      if (!blob) throw new Error('Thumbnail unavailable.');
+      return blob;
+    } finally { URL.revokeObjectURL(url); }
+  }
+  function runThumbnailQueue() {
+    while (thumbnailActive < 3 && thumbnailQueue.length) {
+      const {item, thumb, generation} = thumbnailQueue.shift();
+      if (generation !== thumbnailGeneration || !thumb.isConnected) continue;
+      thumbnailActive++;
+      request('thumbnail', item.path).then(file => {
+        if (generation !== thumbnailGeneration || !thumb.isConnected) return;
+        const url = URL.createObjectURL(file), image = document.createElement('img');
+        thumbnailURLs.push(url); image.alt = ''; image.onload = () => { if (generation === thumbnailGeneration && thumb.isConnected) thumb.replaceChildren(image); }; image.src = url;
+      }).catch(() => {}).finally(() => { thumbnailActive--; runThumbnailQueue(); });
+    }
+  }
+  function observeThumbnail(thumb, item) {
+    if (!thumbnailObserver) return;
+    thumb._thumbnailItem = item; thumbnailObserver.observe(thumb);
+  }
   const status = text => $('folder-status').textContent = text;
   function showPathError() {
     const overlay = $('folder-path-error');
@@ -49,13 +91,14 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     if (!root || from !== getPeer() || typeof message.id !== 'string' || !safePath(message.path)) return;
     const base = root;
     try {
-      if (message.operation === 'file') {
+      if (message.operation === 'file' || message.operation === 'thumbnail') {
         if (!message.path.length) throw new Error('Invalid file path.');
         const dir = await directory(message.path.slice(0,-1), base);
         const file = await (await dir.getFileHandle(message.path.at(-1))).getFile();
-        const bytes = await file.arrayBuffer();
+        const payload = message.operation === 'thumbnail' ? await makeThumbnail(file) : file;
+        const bytes = await payload.arrayBuffer();
         if (root !== base || !isConnected() || from !== getPeer()) return;
-        await sendBytes(bytes, from, {requestId:message.id, name:file.name, type:file.type, modified:file.lastModified});
+        await sendBytes(bytes, from, {requestId:message.id, name:file.name, type:payload.type, modified:file.lastModified});
       } else {
         const result = message.operation === 'list' ? await listing(message.path, base) : message.operation === 'search' && typeof message.query === 'string' && message.query.length <= 200 ? await searchFolder(message.path, message.query, base) : null;
         if (!result) throw new Error('Invalid request.');
@@ -74,6 +117,8 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
   }
   function rejectPending() { for (const item of pending.values()) { clearTimeout(item.timer); item.reject(new Error('The shared folder is no longer available.')); } pending.clear(); }
   function setRemote(message) {
+    resetSelection();
+    clearThumbnails();
     const wasRemote = remote; remoteGeneration++; activeRequest++; $('folder-loading').hidden = true;
     remote = typeof message.name === 'string' && message.name ? {name:message.name,device:typeof message.device === 'string' ? message.device : 'Device'} : null;
     rejectPending();
@@ -90,7 +135,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     if (!wasRemote) showExplorer();
     else if (!$('folder-explorer').hidden) void load();
   }
-  function showShared() { $('workspace').classList.remove('browsing-folder'); $('dropzone').hidden = false; $('folder-explorer').hidden = true; $('shared-tab').classList.add('selected'); $('browse-tab').classList.remove('selected'); $('shared-tab').setAttribute('aria-pressed','true'); $('browse-tab').setAttribute('aria-pressed','false'); }
+  function showShared() { clearThumbnails(); $('workspace').classList.remove('browsing-folder'); $('dropzone').hidden = false; $('folder-explorer').hidden = true; $('shared-tab').classList.add('selected'); $('browse-tab').classList.remove('selected'); $('shared-tab').setAttribute('aria-pressed','true'); $('browse-tab').setAttribute('aria-pressed','false'); }
   function sizeExplorer() {
     if ($('folder-explorer').hidden || !window.matchMedia('(max-width: 500px)').matches) return;
     const topSpace = $('folder-explorer').getBoundingClientRect().top - $('workspace').getBoundingClientRect().top;
@@ -169,7 +214,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     $('folder-loading').classList.toggle('is-searching', !!query);
     $('folder-loading').hidden = false;
     $('folder-content').setAttribute('aria-busy','true');
-    try { const result = await request(query ? 'search' : 'list', path, query); if (token !== activeRequest) return; currentPath = path; entries = result; breadcrumbs(); render(query); }
+    try { const result = await request(query ? 'search' : 'list', path, query); if (token !== activeRequest) return; resetSelection(); currentPath = path; entries = result; breadcrumbs(); render(query); }
     catch (error) {
       const missing = error.name === 'NotFoundError' || /(?:not found|could not be found|does not exist|no such file or directory)/i.test(error.message || '');
       if (token === activeRequest) { if (addressEntry && missing) showPathError(); else status(error.message); }
@@ -197,17 +242,29 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
   function itemName(item) { const name = document.createElement('button'); name.type = 'button'; name.className = 'folder-item-name'; name.textContent = item.name; name.title = item.name; name.onclick = () => item.kind === 'directory' ? navigate(item.path) : previewFile(item); return name; }
   function renderCards(items, container) {
     const grid = document.createElement('div'); grid.className = 'folder-grid';
-    for (const item of sorted(items)) { const card = document.createElement('article'); card.className = 'folder-card'; card.addEventListener('click', event => { if (!event.target.closest('button')) item.kind === 'directory' ? navigate(item.path) : previewFile(item); }); const thumb = document.createElement('button'); thumb.type = 'button'; thumb.className = 'folder-thumb'; thumb.setAttribute('aria-label',`${item.kind === 'directory' ? 'Open' : 'Preview'} ${item.name}`); thumb.onclick = () => item.kind === 'directory' ? navigate(item.path) : previewFile(item); const icon = document.createElement('i'); icon.className = fileIcon(item); thumb.append(icon); card.append(thumb,itemName(item)); const sub = document.createElement('div'); sub.className = 'folder-item-meta'; sub.textContent = item.kind === 'directory' ? 'Folder' : size(item.size); card.append(sub); if (item.kind === 'file') card.append(actionButtons(item)); grid.append(card); }
+    for (const item of sorted(items)) { const card = document.createElement('article'); card.className = 'folder-card'; card._folderItem = item; card.classList.toggle('selected', selected.has(selectionKey(item))); card.addEventListener('click', event => { if (!event.target.closest('button')) item.kind === 'directory' ? navigate(item.path) : previewFile(item); }); const thumb = document.createElement('button'); thumb.type = 'button'; thumb.className = 'folder-thumb'; thumb.setAttribute('aria-label',`${item.kind === 'directory' ? 'Open' : 'Preview'} ${item.name}`); thumb.onclick = () => item.kind === 'directory' ? navigate(item.path) : previewFile(item); const icon = document.createElement('i'); icon.className = fileIcon(item); thumb.append(icon); if (isImage(item)) observeThumbnail(thumb,item); card.append(thumb,itemName(item)); const sub = document.createElement('div'); sub.className = 'folder-item-meta'; sub.textContent = item.kind === 'directory' ? 'Folder' : size(item.size); card.append(sub); if (item.kind === 'file') card.append(actionButtons(item)); grid.append(card); }
     container.append(grid);
   }
   function renderList(items, container) {
     const wrapper = document.createElement('div'); wrapper.className = 'folder-table-wrap'; const table = document.createElement('table'); table.className = 'folder-table'; const head = table.createTHead().insertRow();
     for (const [label,key] of [['Name','name'],['Size','size'],['Type','type'],['Date modified','modified']]) { const th = document.createElement('th'), button = document.createElement('button'); button.textContent = `${label}${sort === key ? (direction === 1 ? ' ↑' : ' ↓') : ''}`; th.setAttribute('aria-sort',sort === key ? (direction === 1 ? 'ascending' : 'descending') : 'none'); button.onclick = () => { direction = sort === key ? -direction : 1; sort = key; render($('folder-search').value.trim()); }; th.append(button); head.append(th); }
     const actionsHead = document.createElement('th'); actionsHead.setAttribute('aria-label','Actions'); head.append(actionsHead); const body = table.createTBody();
-    for (const item of sorted(items)) { const row = body.insertRow(); const name = row.insertCell(); const icon = document.createElement('i'); icon.className = fileIcon(item); name.append(icon,itemName(item)); row.insertCell().textContent = item.kind === 'file' ? size(item.size) : '—'; row.insertCell().textContent = fileType(item); row.insertCell().textContent = item.modified ? new Date(item.modified).toLocaleDateString() : '—'; const actions = row.insertCell(); if (item.kind === 'file') actions.append(actionButtons(item)); }
+    for (const item of sorted(items)) { const row = body.insertRow(); row._folderItem = item; row.classList.toggle('selected', selected.has(selectionKey(item))); const name = row.insertCell(); const icon = document.createElement('i'); icon.className = fileIcon(item); name.append(icon,itemName(item)); row.insertCell().textContent = item.kind === 'file' ? size(item.size) : '—'; row.insertCell().textContent = fileType(item); row.insertCell().textContent = item.modified ? new Date(item.modified).toLocaleDateString() : '—'; const actions = row.insertCell(); if (item.kind === 'file') actions.append(actionButtons(item)); }
     wrapper.append(table); container.append(wrapper);
   }
   function render(query) {
+    clearThumbnails();
+    if (view === 'cards' && window.IntersectionObserver) {
+      const generation = thumbnailGeneration;
+      thumbnailObserver = new IntersectionObserver(records => {
+        if (generation !== thumbnailGeneration || $('folder-explorer').hidden) return;
+        for (const record of records) if (record.isIntersecting) {
+          thumbnailObserver?.unobserve(record.target);
+          thumbnailQueue.push({item:record.target._thumbnailItem, thumb:record.target, generation});
+        }
+        runThumbnailQueue();
+      });
+    }
     const content = $('folder-content'); content.replaceChildren(); status(entries.length ? `${entries.length} ${entries.length === 1 ? 'item' : 'items'}${query ? ' found' : ''}` : (query ? 'No matching files found.' : 'This folder is empty.'));
     $('folder-content-area').classList.toggle('no-search-results', !!query && !entries.length);
     requestAnimationFrame(updateCardFades);
@@ -216,8 +273,52 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     for (const item of entries) { const path = item.path.slice(currentPath.length,-1), key = JSON.stringify(path); if (!groups.has(key)) groups.set(key,{path,items:[]}); groups.get(key).items.push(item); }
     for (const group of groups.values()) { const section = document.createElement('section'); section.className = 'search-group'; const path = document.createElement('button'); path.type = 'button'; path.className = 'search-path'; const icon = document.createElement('i'); icon.className = 'fa-regular fa-folder-open'; path.append(icon,document.createTextNode(group.path.length ? group.path.join(' › ') : 'Current folder')); const target = [...currentPath, ...group.path]; path.onclick = () => navigate(target); section.append(path); (view === 'cards' ? renderCards : renderList)(group.items,section); content.append(section); }
   }
+  function updateSelection() {
+    $('folder-select').setAttribute('aria-pressed', String(selectionMode));
+    const button = $('folder-download-selected'), count = selected.size;
+    button.hidden = !count || !selectionMode;
+    button.disabled = downloadingSelection;
+    button.querySelector('span').textContent = downloadingSelection ? 'Downloading…' : `${count} ${count === 1 ? 'file' : 'files'}`;
+    for (const element of $('folder-content').querySelectorAll('.folder-card, tbody tr')) {
+      element.classList.toggle('selected', !!element._folderItem && selected.has(selectionKey(element._folderItem)));
+    }
+  }
+  function resetSelection() { selectionMode = false; selected.clear(); updateSelection(); }
+  $('folder-select').onclick = () => { selectionMode = !selectionMode; if (!selectionMode) selected.clear(); updateSelection(); };
+  window.matchMedia('(max-width: 500px)').addEventListener('change', event => { if (event.matches) resetSelection(); });
+  $('folder-content').addEventListener('click', event => {
+    if (!selectionMode) return;
+    const element = event.target.closest('.folder-card, tbody tr'), item = element?._folderItem;
+    if (!item || item.kind !== 'file') return;
+    event.preventDefault(); event.stopPropagation();
+    const key = selectionKey(item); if (selected.has(key)) selected.delete(key); else selected.set(key,item);
+    updateSelection();
+  }, true);
+  document.addEventListener('keydown', event => {
+    if (!(event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'a') || $('folder-explorer').hidden || !window.matchMedia('(min-width: 501px)').matches || event.target.closest('input, textarea, [contenteditable="true"]') || document.querySelector('dialog[open]')) return;
+    event.preventDefault(); selectionMode = true;
+    for (const item of entries) if (item.kind === 'file' && item.path.length === currentPath.length + 1 && currentPath.every((part,index) => item.path[index] === part)) selected.set(selectionKey(item),item);
+    updateSelection();
+  });
+  $('folder-download-selected').onclick = async () => {
+    if (downloadingSelection) return;
+    const files = [...selected.values()], generation = remoteGeneration;
+    downloadingSelection = true; updateSelection();
+    try {
+      for (const item of files) {
+        if (generation !== remoteGeneration || !isConnected()) throw new Error('The shared folder is no longer available.');
+        status(`Fetching ${item.name}…`);
+        const file = await request('file',item.path);
+        if (generation !== remoteGeneration || !isConnected()) throw new Error('The shared folder is no longer available.');
+        const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url),60000);
+      }
+      status('');
+    } catch (error) { status(error.message); }
+    finally { downloadingSelection = false; updateSelection(); }
+  };
   function updateCardFades() {
     const scroller = $('folder-content-wrap'), area = $('folder-content-area');
+    area.classList.toggle('no-horizontal-scroll', scroller.scrollWidth <= scroller.clientWidth);
     const visible = view === 'cards' && !$('folder-explorer').hidden;
     area.classList.toggle('fade-top', visible && scroller.scrollTop > 1);
     area.classList.toggle('fade-bottom', visible && scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 1);
