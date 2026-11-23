@@ -209,6 +209,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
   }
   function render(query) {
     const content = $('folder-content'); content.replaceChildren(); status(entries.length ? `${entries.length} ${entries.length === 1 ? 'item' : 'items'}${query ? ' found' : ''}` : (query ? 'No matching files found.' : 'This folder is empty.'));
+    $('folder-content-area').classList.toggle('no-search-results', !!query && !entries.length);
     requestAnimationFrame(updateCardFades);
     if (!query) { (view === 'cards' ? renderCards : renderList)(entries,content); return; }
     const groups = new Map();

@@ -292,6 +292,10 @@ async function retryClipboardWrite() {
 }
 async function enableClipboard(fromClick) {
   if (clipboardEnabled) return;
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) {
+    updateClipboardStatus('Automatic clipboard sync is unavailable on iPhone and iPad. Use Paste under Shared files to send clipboard content, then Copy on the other device.');
+    return;
+  }
   if (!fromClick) {
     try { const permission = await navigator.permissions.query({name:'clipboard-read'}); if (permission.state !== 'granted' || !document.hasFocus()) { updateClipboardStatus(); return; } }
     catch { updateClipboardStatus(); return; }

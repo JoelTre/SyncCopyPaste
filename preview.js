@@ -60,7 +60,7 @@ export async function openPreview(name, getFile) {
     let text; try { text = new TextDecoder('utf-8', {fatal:true}).decode(bytes, {stream:file.size > limit}); } catch { message(unsupported); return; }
     if (file.size > limit) text += '\n\n[Preview truncated]';
     displayText(text || '(Empty file)');
-    const language = {html:'xml', htm:'xml', js:'javascript', mjs:'javascript', cjs:'javascript', css:'css'}[ext];
+    const language = {html:'xml', htm:'xml', js:'javascript', mjs:'javascript', cjs:'javascript', css:'css', py:'python'}[ext];
     if (language && text) highlightCode(text, language, token);
   } catch { if (token === generation) message(unsupported); }
 }
