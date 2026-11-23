@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="connecting-overlay" class="connecting-overlay" role="status" aria-live="polite" hidden><div class="connecting-content"><span class="connecting-spinner" aria-hidden="true"></span><span id="connecting-text">Connecting...</span></div></div>
+<div id="connecting-overlay" class="connecting-overlay" role="status" aria-live="polite" hidden><div class="connecting-content"><span id="connecting-spinner" class="connecting-spinner" aria-hidden="true"></span><span id="connecting-text">Connecting...</span><button id="retry-connection" class="primary" type="button" hidden>Try again</button></div></div>
 <header><div class="menu-wrap"><button id="menu-button" class="icon-button" aria-label="Open menu" aria-expanded="false" aria-controls="menu"><i class="fa-solid fa-bars"></i></button><nav id="menu" hidden><button id="about-button"><i class="fa-solid fa-circle-info"></i> About</button><button id="how-button"><i class="fa-solid fa-circle-question"></i> How this app works</button><button id="theme-button"><i class="fa-solid fa-sun"></i> <span>Light mode</span></button></nav></div><div class="brand"><span class="brand-icon"><i class="fa-solid fa-arrow-right-arrow-left"></i></span><strong>SyncCopyPaste</strong></div><span id="share-app-status" class="share-app-status" role="status" aria-live="polite"></span><button id="share-app" class="icon-button share-app" aria-label="Copy app link" title="Share app"><i class="fa-solid fa-share-nodes"></i></button></header>
 <main>
   <div id="connection-lost" class="connection-lost" role="status" hidden><span>Connection lost</span></div>

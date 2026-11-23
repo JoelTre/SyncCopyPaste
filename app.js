@@ -17,9 +17,11 @@ try {
   if (!/^[a-f0-9]{64}$/.test(identity || '')) { identity = randomHex(); localStorage.setItem(identityKey, identity); }
   const stored = JSON.parse(localStorage.getItem(rememberedKey) || '[]');
   if (Array.isArray(stored)) devices = stored.filter(d => d && /^[a-f0-9]{64}$/.test(d.id) && /^[a-f0-9]{64}$/.test(d.secret) && typeof d.name === 'string');
+} catch { if (!identity) identity = randomHex(); }
+try {
   const selected = sessionStorage.getItem(selectionKey); sessionStorage.removeItem(selectionKey);
   if (!valid(supplied)) selectedDevice = devices.find(d => d.id === selected) || null;
-} catch { identity = randomHex(); }
+} catch { /* The regular pairing flow remains available. */ }
 const contribution = randomHex();
 async function digest(value) { return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))), b => b.toString(16).padStart(2,'0')).join(''); }
 function saveDevices() { try { localStorage.setItem(rememberedKey, JSON.stringify(devices)); return true; } catch { notify('Could not remember this device. Check browser storage settings.'); return false; } }
@@ -37,11 +39,27 @@ function renderDevices() {
 }
 $('cancel-remembered').onclick = () => location.replace(location.pathname + location.search);
 renderDevices();
+try {
+  if (sessionStorage.getItem('synccopypaste-identity-mismatch')) {
+    sessionStorage.removeItem('synccopypaste-identity-mismatch');
+    $('remembered-status').textContent = 'The other device could not be verified. Forget this device on both sides, then connect again using the QR code.';
+  }
+} catch { /* Storage may be unavailable. */ }
 if (valid(supplied)) $('connecting-overlay').hidden = false;
 const pairURL = new URL(location.href); pairURL.hash = `${credentials.code}:${credentials.passcode}`;
 $('pair-link').href = pairURL.href; $('pair-link').textContent = pairURL.href;
 $('room-code').textContent = credentials.code; $('passcode').textContent = credentials.passcode;
 let room, sendControl, sendFile, connected = false, peerId = null, epoch = 0, noticeTimer, reconnectTimer = null;
+let initialConnectionTimedOut = false;
+const initialConnectionTimer = valid(supplied) ? setTimeout(() => {
+  if (connected) return;
+  initialConnectionTimedOut = true;
+  room?.leave();
+  $('connecting-spinner').hidden = true;
+  $('connecting-text').textContent = 'Could not connect. Make sure the other device has the app open.';
+  $('retry-connection').hidden = false;
+}, 5000) : null;
+$('retry-connection').onclick = () => location.reload();
 const files = new Map(), incoming = new Set(), discarded = new Set();
 function notify(message) { $('notice').textContent = message; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => $('notice').textContent = '', 6000); }
 function deviceType() {
@@ -188,6 +206,7 @@ async function start() {
     const {joinRoom} = await import('https://esm.run/trystero');
     const roomCode = selectedDevice ? await digest('synccopypaste-room-v1:' + selectedDevice.secret) : credentials.code;
     const password = selectedDevice ? await digest('synccopypaste-password-v1:' + selectedDevice.secret) : credentials.passcode;
+    if (initialConnectionTimedOut) return;
     room = joinRoom({appId:'synccopypaste-v1',password,maxUsers:2,rtcConfig:{iceServers}},roomCode);
     const control = room.makeAction('control'), fileAction = room.makeAction('file'), folderFileAction = room.makeAction('folder-file');
     folderFileAction.onMessage((data, context) => folders.onBytes(data, context));
@@ -197,7 +216,10 @@ async function start() {
     control.onMessage((message, context) => { const from = context.peerId; if (from !== peerId || !message) return; if (message.type?.startsWith('folder-')) { folders.onControl(message,from); return; } if (message.type === 'hello') { void handleHello(message,from); } else if (message.type === 'clipboard-sync') { peerClipboardEnabled = message.enabled === true; if (!peerClipboardEnabled) pendingClipboard = null; updateClipboardStatus(); if (peerClipboardEnabled && !clipboardEnabled) void enableClipboard(false); else if (peerClipboardEnabled) void checkClipboard(); } else if (message.type === 'file-start' && typeof message.id === 'string') incoming.add(message.id); else if (message.type === 'clear') { clearFiles(); notify('The shared files were cleared.'); } });
     fileAction.onMessage((data, context) => { const {peerId: from, metadata} = context; if (!connected || from !== peerId || !metadata || typeof metadata.id !== 'string' || typeof metadata.name !== 'string' || !(data instanceof Uint8Array)) return; incoming.delete(metadata.id); if (discarded.delete(metadata.id)) return; const file = new File([data],metadata.name,{type:typeof metadata.type === 'string' ? metadata.type : '',lastModified:Number.isFinite(metadata.lastModified) ? metadata.lastModified : Date.now()}); addFile(metadata.id,file); if (metadata.clipboard && clipboardEnabled && peerClipboardEnabled) void receiveClipboard(file); });
     async function handleHello(message, from) {
-      if (selectedDevice && message.identity !== selectedDevice.id) { room.leave(); location.replace(location.pathname + location.search); return; }
+      if (selectedDevice && message.identity !== selectedDevice.id) {
+        try { sessionStorage.setItem('synccopypaste-identity-mismatch','1'); } catch {}
+        room.leave(); location.replace(location.pathname + location.search); return;
+      }
       const name = typeof message.device === 'string' ? message.device.slice(0,40) : 'device';
       if (!selectedDevice && /^[a-f0-9]{64}$/.test(message.identity || '') && /^[a-f0-9]{64}$/.test(message.contribution || '') && message.identity !== identity) {
         const secret = await digest('synccopypaste-pair-v1:' + [contribution,message.contribution].sort().join(':'));
@@ -209,7 +231,9 @@ async function start() {
       sendControl({type:'clipboard-sync',enabled:clipboardEnabled},from); folders.join();
     }
     room.onPeerJoin(context => {
+      if (initialConnectionTimedOut) return;
       const id = typeof context === 'string' ? context : context.peerId, reconnecting = reconnectTimer !== null;
+      clearTimeout(initialConnectionTimer);
       clearTimeout(reconnectTimer); reconnectTimer = null; peerId = id; connected = true;
       $('connection-lost').hidden = true; $('connecting-overlay').hidden = true;
       if (!selectedDevice) { $('remembered').hidden = true; $('pairing').hidden = true; $('workspace').hidden = false; }
@@ -235,7 +259,7 @@ async function start() {
       $('connection-lost').querySelector('span').textContent = 'Connection lost'; $('connection-lost').hidden = false; $('connection-status').textContent = 'Device disconnected. Waiting for another device…'; notify('The other device disconnected.');
     });
     $('connection-status').textContent = 'Waiting for another device…';
-  } catch (error) { $('connecting-overlay').hidden = true; $('connection-status').textContent = 'Could not start the connection. Reload to try again.'; console.error(error); }
+  } catch (error) { if (!initialConnectionTimedOut && !valid(supplied)) { $('connecting-overlay').hidden = true; $('connection-status').textContent = 'Could not start the connection. Reload to try again.'; } console.error(error); }
 }
 let clipboardEnabled = false, peerClipboardEnabled = false, clipboardTimer, clipboardBusy = false, lastClipboardHash = '', pendingClipboard = null, clipboardWriteBusy = false;
 const clipboardStatus = $('clipboard-status');
