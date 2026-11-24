@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f9fbfd">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https://synccopypaste.joel-tregurtha.workers.dev; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'none'">
+  <title>Global analytics | SyncCopyPaste</title>
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<header class="analytics-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">⇄</span><strong>SyncCopyPaste</strong></a><a class="home-link" href="../">Back to app</a></header>
+<main class="dashboard">
+  <div class="dashboard-heading"><div><span class="section-label">GLOBAL ANALYTICS</span><h1>Sharing, in numbers</h1><p>A look at how SyncCopyPaste is being used around the world.</p></div><button class="refresh-button" id="refresh" type="button">Refresh</button></div>
+  <p id="status" class="dashboard-status" role="status" aria-live="polite">Loading analytics…</p>
+  <section aria-labelledby="activity-title"><div class="section-heading"><div><span class="section-label">ALL TIME</span><h2 id="activity-title">Activity</h2></div></div>
+    <div class="metric-grid"><article class="metric-card"><span>Device pairs</span><strong id="pairs">—</strong><small>New remembered pairings</small></article><article class="metric-card"><span>Connection attempts</span><strong id="attempts">—</strong><small>Reported by each browser</small></article><article class="metric-card"><span>Successful connections</span><strong id="connections">—</strong><small>Reported once per connection</small></article><article class="metric-card"><span>Files transferred</span><strong id="files">—</strong><small>Across all transfer types</small></article><article class="metric-card"><span>Data transferred</span><strong id="bytes">—</strong><small>Across all transfer types</small></article><article class="metric-card"><span>Analytics opt-outs</span><strong id="optouts">—</strong><small>Actions, not unique people</small></article></div>
+  </section>
+  <section aria-labelledby="performance-title"><div class="section-heading"><div><span class="section-label">CONNECTION QUALITY</span><h2 id="performance-title">Performance</h2></div></div><div class="metric-grid performance-grid"><article class="metric-card"><span>Average round-trip time</span><strong id="rtt">—</strong><small>Mean of available samples</small></article><article class="metric-card"><span>Average transfer rate</span><strong id="rate">—</strong><small>Weighted by recorded transfer time</small></article></div></section>
+  <section aria-labelledby="breakdown-title"><div class="section-heading"><div><span class="section-label">COMPLETED TRANSFERS</span><h2 id="breakdown-title">Transfer breakdown</h2></div></div><div class="breakdown" role="region" aria-label="Transfer breakdown" tabindex="0"><table><thead><tr><th scope="col">Type</th><th scope="col">Files</th><th scope="col">Data</th><th scope="col">Average rate</th></tr></thead><tbody><tr><th scope="row">Shared files</th><td id="shared-files">—</td><td id="shared-bytes">—</td><td id="shared-rate">—</td></tr><tr><th scope="row">File explorer</th><td id="explorer-files">—</td><td id="explorer-bytes">—</td><td id="explorer-rate">—</td></tr><tr><th scope="row">Clipboard sync</th><td id="clipboard-files">—</td><td id="clipboard-bytes">—</td><td id="clipboard-rate">—</td></tr></tbody></table></div></section>
+  <p class="dashboard-note">These figures are approximate and include only reports received from browsers with analytics enabled. Transfer times vary by transfer method, and explorer totals can include previews. Manually pasted items count as shared files.</p>
+</main>
+<script type="module" src="dashboard.js"></script>
+</body></html>
