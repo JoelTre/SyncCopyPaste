@@ -102,6 +102,15 @@ export async function openPreview(name, getFile) {
     if (token !== generation) return;
     if (!looksLikeText(bytes.subarray(0, Math.min(bytes.length,8192)))) { message(unsupported); return; }
     let text; try { text = new TextDecoder('utf-8', {fatal:true}).decode(bytes, {stream:file.size > limit}); } catch { message(unsupported); return; }
+    if (file.name === 'Pasted text.txt' && file.type === 'text/plain' && file.size <= limit) {
+      const value = text.trim(); let url;
+      try { if (!/\s/.test(value)) url = new URL(value); } catch { /* Display ordinary text. */ }
+      if (url && ['http:', 'https:'].includes(url.protocol)) {
+        const pre = document.createElement('pre'), link = document.createElement('a');
+        pre.className = 'preview-code'; link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = value;
+        pre.append(link); body.replaceChildren(pre); $('preview-title').textContent = 'Pasted link'; return;
+      }
+    }
     if (ext === 'csv' || ext === 'tsv') { displayTable(text, ext === 'csv' ? ',' : '\t', file.size > limit); return; }
     if (file.size > limit) text += '\n\n[Preview truncated]';
     displayText(text || '(Empty file)');
