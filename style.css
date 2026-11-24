@@ -184,3 +184,5 @@ html[data-theme=light] #cancel-connection{background:#60798c;color:#fff}
 .folder-explorer:has(#folder-select[aria-pressed="true"]) .folder-item-name:hover{text-decoration:none}
 
 .folder-select{height:36px;padding:0 13px;border:0;border-radius:9px;background:var(--raised);color:var(--text);font-weight:500}.folder-select[aria-pressed=true]{background:var(--blue);color:#fff}.folder-card.selected{border-color:var(--blue);background:color-mix(in srgb,var(--blue) 20%,var(--surface))}.folder-table tr.selected td{background:color-mix(in srgb,var(--blue) 20%,var(--panel))}.folder-download-selected{position:absolute;z-index:4;bottom:12px;left:50%;transform:translateX(-50%);white-space:nowrap;box-shadow:0 4px 16px var(--shadow)}@media(max-width:500px){.folder-select,.folder-download-selected{display:none!important}}
+
+.preview-image{-webkit-touch-callout:default;user-select:auto;-webkit-user-select:auto}

@@ -1,3 +1,4 @@
+import {isIOS, imageType, shareImage} from './image-save.js';
 const $ = id => document.getElementById(id);
 const dialog = $('preview-dialog'), body = $('preview-body');
 let generation = 0, imageURL = null, mammothPromise, highlightPromise, currentFile = null, copyHandler;
@@ -5,7 +6,7 @@ const unsupported = 'A preview cannot be displayed for this file type.';
 export function setPreviewCopyHandler(handler) { copyHandler = handler; }
 function release() { generation++; if (imageURL) URL.revokeObjectURL(imageURL); imageURL = null; currentFile = null; $('preview-copy').disabled = true; $('preview-download').disabled = true; $('preview-status').textContent = ''; body.replaceChildren(); }
 $('preview-copy').onclick = () => { if (currentFile && copyHandler) void copyHandler(currentFile, text => { $('preview-status').textContent = text; }); };
-$('preview-download').onclick = () => { if (!currentFile) return; const url = URL.createObjectURL(currentFile), link = document.createElement('a'); link.href = url; link.download = currentFile.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); };
+$('preview-download').onclick = () => { if (!currentFile) return; if (isIOS() && imageType(currentFile)) { shareImage(currentFile, () => { $('preview-status').textContent = 'Touch and hold the image to save it.'; }, text => { $('preview-status').textContent = text; }); return; } const url = URL.createObjectURL(currentFile), link = document.createElement('a'); link.href = url; link.download = currentFile.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); };
 $('close-preview').onclick = () => dialog.close();
 dialog.addEventListener('close', release);
 dialog.addEventListener('click', event => { if (event.target !== dialog) return; const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); });
@@ -89,7 +90,9 @@ export async function openPreview(name, getFile) {
       imageURL = URL.createObjectURL(videoFile); const video = document.createElement('video'); video.className = 'preview-video'; video.controls = true; video.playsInline = true; video.preload = 'metadata'; video.setAttribute('aria-label', file.name); video.onerror = () => { if (token === generation) message('This video format or codec cannot be played in this browser. Download the file to play it in another app.'); }; video.src = imageURL; body.replaceChildren(video); return;
     }
     if (file.type.startsWith('image/') || ['png','jpg','jpeg','gif','webp','bmp','avif','svg'].includes(ext)) {
-      imageURL = URL.createObjectURL(file); const img = document.createElement('img'); img.className = 'preview-image'; img.alt = file.name; img.onerror = () => { if (token === generation) message(unsupported); }; img.src = imageURL; body.replaceChildren(img); return;
+      const img = document.createElement('img'); img.className = 'preview-image'; img.alt = file.name; img.onerror = () => { if (token === generation) message(unsupported); }; body.replaceChildren(img);
+      if (isIOS()) { const reader = new FileReader(); reader.onload = () => { if (token === generation) img.src = reader.result; }; reader.onerror = () => { if (token === generation) message(unsupported); }; reader.readAsDataURL(file.type ? file : file.slice(0, file.size, imageType(file))); }
+      else { imageURL = URL.createObjectURL(file); img.src = imageURL; } return;
     }
     if (ext === 'docx') {
       message('Preparing document preview…'); const library = await mammoth(); const result = await library.extractRawText({arrayBuffer:await file.arrayBuffer()}); if (token === generation) displayText(result.value || '(Empty document)', true); return;

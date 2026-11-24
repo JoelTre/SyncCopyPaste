@@ -1,3 +1,4 @@
+import {isIOS, imageType} from './image-save.js';
 // Folder handles stay on the device that selected them; the peer receives only
 // requested directory metadata and explicitly requested file contents.
 export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getDevice, copyFile, openPreview}) {
@@ -226,6 +227,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
   function sorted(items) { return [...items].sort((a,b) => { if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1; const x = sort === 'type' ? fileType(a) : a[sort] ?? '', y = sort === 'type' ? fileType(b) : b[sort] ?? ''; return (typeof x === 'number' && typeof y === 'number' ? x-y : String(x).localeCompare(String(y),undefined,{numeric:true,sensitivity:'base'})) * direction; }); }
   function fileIcon(item) { if (item.kind === 'directory') return 'fa-solid fa-folder'; if ((item.type||'').startsWith('image/')) return 'fa-regular fa-file-image'; if ((item.type||'').startsWith('video/')) return 'fa-regular fa-file-video'; if ((item.type||'').startsWith('audio/')) return 'fa-regular fa-file-audio'; if (/\.pdf$/i.test(item.name)) return 'fa-regular fa-file-pdf'; if (/\.(txt|md|csv|js|json|html|css)$/i.test(item.name)) return 'fa-regular fa-file-lines'; return 'fa-regular fa-file'; }
   async function fileAction(item, action) {
+    if (action === 'download' && isIOS() && imageType({name:item.name, type:item.type || ''})) { void openPreview(item.name, () => request('file', item.path)); return; }
     status(`Fetching ${item.name}…`);
     try {
       const file = await request('file',item.path);

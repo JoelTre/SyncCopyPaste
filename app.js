@@ -1,3 +1,4 @@
+import {isIOS, imageType, shareImage} from './image-save.js';
 import {createFolderBrowser} from './folders.js';
 import {openPreview, setPreviewCopyHandler} from './preview.js';
 import {FEEDBACK_ENDPOINT} from './feedback-config.js';
@@ -128,7 +129,7 @@ function render() {
     const name = document.createElement('button'); name.type = 'button'; name.className = 'filename'; name.title = file.name; name.setAttribute('aria-label', `Preview ${file.name}`); name.onclick = () => void openPreview(file.name, async () => file); const dot = file.name.lastIndexOf('.'); const stem = document.createElement('span'); stem.className = 'stem'; stem.textContent = dot > 0 ? file.name.slice(0,dot) : file.name; const ext = document.createElement('span'); ext.className = 'ext'; ext.textContent = dot > 0 ? file.name.slice(dot) : ''; name.append(stem,ext);
     const size = document.createElement('div'); size.className = 'filesize'; size.textContent = `${formatSize(file.size)}${status ? ` · ${status}` : ''}`;
     const actions = document.createElement('div'); actions.className = 'card-actions'; const copy = document.createElement('button'); copy.innerHTML = '<i class="fa-regular fa-copy" aria-hidden="true"></i>'; copy.setAttribute('aria-label', `Copy ${file.name}`); copy.title = 'Copy'; copy.onclick = () => copyFile(file);
-    const download = document.createElement('button'); download.innerHTML = '<i class="fa-solid fa-download" aria-hidden="true"></i>'; download.setAttribute('aria-label', `Download ${file.name}`); download.title = 'Download'; download.onclick = () => { const a = document.createElement('a'); a.href = url; a.download = file.name; a.click(); };
+    const download = document.createElement('button'); download.innerHTML = '<i class="fa-solid fa-download" aria-hidden="true"></i>'; download.setAttribute('aria-label', `Download ${file.name}`); download.title = 'Download'; download.onclick = () => { if (isIOS() && imageType(file)) { shareImage(file, () => void openPreview(file.name, async () => file), notify); return; } const a = document.createElement('a'); a.href = url; a.download = file.name; a.click(); };
     actions.append(copy,download); card.append(thumb,name,size,actions); list.append(card);
   }
 }
