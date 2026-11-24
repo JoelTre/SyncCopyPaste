@@ -139,6 +139,17 @@ function render() {
     const size = document.createElement('div'); size.className = 'filesize'; size.textContent = `${formatSize(file.size)}${status ? ` · ${status}` : ''}`;
     const actions = document.createElement('div'); actions.className = 'card-actions'; const copy = document.createElement('button'); copy.innerHTML = '<i class="fa-regular fa-copy" aria-hidden="true"></i>'; copy.setAttribute('aria-label', `Copy ${file.name}`); copy.title = 'Copy'; copy.onclick = () => copyFile(file);
     const download = document.createElement('button'); download.innerHTML = '<i class="fa-solid fa-download" aria-hidden="true"></i>'; download.setAttribute('aria-label', `Download ${file.name}`); download.title = 'Download'; download.onclick = () => { if (isIOS() && imageType(file)) { shareImage(file, () => void openPreview(file.name, async () => file), notify); return; } const a = document.createElement('a'); a.href = url; a.download = file.name; a.click(); };
+    if (file.type === 'text/plain' && file.name === 'Pasted text.txt') {
+      file.text().then(text => {
+        const value = text.trim();
+        if (/\s/.test(value)) return;
+        let link; try { link = new URL(value); } catch { return; }
+        if (!['http:', 'https:'].includes(link.protocol)) return;
+        stem.textContent = 'Pasted link'; ext.textContent = ''; name.title = 'Pasted link'; name.setAttribute('aria-label', 'Preview Pasted link');
+        download.innerHTML = '<i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>'; download.setAttribute('aria-label', 'Open pasted link in external tab'); download.title = 'Open in external tab';
+        download.onclick = () => { const a = document.createElement('a'); a.href = link.href; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.click(); };
+      }).catch(() => {});
+    }
     actions.append(copy,download); card.append(thumb,name,size,actions); list.append(card);
   }
 }

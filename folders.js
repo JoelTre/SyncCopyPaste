@@ -11,12 +11,12 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
   let selectionMode = false, downloadingSelection = false, selectionAnchor = null;
   const selected = new Map(), selectionKey = item => JSON.stringify(item.path);
   let thumbnailObserver, thumbnailGeneration = 0, thumbnailActive = 0;
-  let thumbnailQueue = [], thumbnailURLs = [];
+  let thumbnailQueue = [], thumbnailCache = new Map();
+  const thumbnailKey = item => JSON.stringify([item.path,item.size,item.modified,item.type]);
   const isImage = item => item.kind === 'file' && ((item.type || '').startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(item.name));
-  function clearThumbnails() {
+  function clearThumbnails(preserveCache = false) {
     thumbnailGeneration++; thumbnailObserver?.disconnect(); thumbnailQueue = [];
-    for (const url of thumbnailURLs) URL.revokeObjectURL(url);
-    thumbnailURLs = [];
+    if (!preserveCache) { for (const url of thumbnailCache.values()) URL.revokeObjectURL(url); thumbnailCache.clear(); }
   }
   async function makeThumbnail(file) {
     const url = URL.createObjectURL(file);
@@ -42,11 +42,13 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       request('thumbnail', item.path).then(file => {
         if (generation !== thumbnailGeneration || !thumb.isConnected) return;
         const url = URL.createObjectURL(file), image = document.createElement('img');
-        thumbnailURLs.push(url); image.alt = ''; image.onload = () => { if (generation === thumbnailGeneration && thumb.isConnected) thumb.replaceChildren(image); }; image.src = url;
+        thumbnailCache.set(thumbnailKey(item),url); image.alt = ''; image.onload = () => { if (generation === thumbnailGeneration && thumb.isConnected) thumb.replaceChildren(image); }; image.src = url;
       }).catch(() => {}).finally(() => { thumbnailActive--; runThumbnailQueue(); });
     }
   }
   function observeThumbnail(thumb, item) {
+    const cached = thumbnailCache.get(thumbnailKey(item));
+    if (cached) { const image = document.createElement('img'); image.alt = ''; image.src = cached; thumb.replaceChildren(image); return; }
     if (!thumbnailObserver) return;
     thumb._thumbnailItem = item; thumbnailObserver.observe(thumb);
   }
@@ -115,6 +117,10 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
         if (file.size !== chunk.size || file.lastModified !== chunk.modified || chunk.offset >= file.size) throw new Error('The source file changed during transfer.');
         const bytes = await file.slice(chunk.offset,Math.min(file.size,chunk.offset + CHUNK_SIZE)).arrayBuffer();
         if (root === base && isConnected() && from === getPeer()) await sendBytes(bytes,from,{requestId:message.id,name:file.name,type:file.type,modified:file.lastModified});
+      } else if (message.operation === 'move') {
+        if (!['file','directory'].includes(message.kind) || !safePath(message.query)) throw new Error('Invalid move request.');
+        await renameLocal(message.path,message.kind,message.path.at(-1),base,message.query);
+        if (root === base && isConnected() && from === getPeer()) { sendMessage({type:'folder-response',id:message.id,entries:[]}); refreshLocalView(); }
       } else if (message.operation === 'rename') {
         if (!['file','directory'].includes(message.kind)) throw new Error('Invalid item type.');
         await renameLocal(message.path, message.kind, message.name, base);
@@ -212,16 +218,24 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
   }
   $('shared-tab').onclick = showShared; $('local-browse-tab').onclick = () => showExplorer('local'); $('browse-tab').onclick = () => showExplorer('remote'); $('split-tab').onclick = showSplit;
   const splitPaths = {local:[], remote:[]}, splitTokens = {local:0, remote:0};
+  const splitEntries = {local:null, remote:null};
+  const splitPending = {local:false, remote:false};
   const splitSelections = {local:new Map(), remote:new Map()};
   const splitView = {local:'list', remote:'list'}, splitSelectMode = {local:false, remote:false}, splitQuery = {local:'', remote:''}, splitSearchOpen = {local:false, remote:false};
   const splitSort = {local:{key:'name',direction:1}, remote:{key:'name',direction:1}};
-  const splitSearchTimer = {local:null, remote:null}, splitAnchors = {local:null, remote:null}, splitThumbnailURLs = {local:[], remote:[]};
+  const splitSearchTimer = {local:null, remote:null}, splitAnchors = {local:null, remote:null}, splitThumbnailCache = {local:new Map(), remote:new Map()};
   const splitThumbnailObservers = {local:null, remote:null};
   let splitThumbnailQueue = [], splitThumbnailActive = 0;
-  function clearSplitThumbnails(which) {
+  const splitThumbnailKey = item => JSON.stringify([item.path,item.size,item.modified,item.type]);
+  function clearSplitThumbnails(which, preserveCache = false) {
     splitThumbnailObservers[which]?.disconnect(); splitThumbnailObservers[which] = null;
     splitThumbnailQueue = splitThumbnailQueue.filter(task => task.which !== which);
-    for (const url of splitThumbnailURLs[which]) URL.revokeObjectURL(url); splitThumbnailURLs[which] = [];
+    if (!preserveCache) { for (const url of splitThumbnailCache[which].values()) URL.revokeObjectURL(url); splitThumbnailCache[which].clear(); }
+  }
+  function displaySplitThumbnail(thumb, url, which, token) {
+    const image = document.createElement('img'); image.alt = '';
+    image.onload = () => { if (source === 'split' && token === splitTokens[which] && thumb.isConnected) thumb.replaceChildren(image); };
+    image.src = url;
   }
   function runSplitThumbnailQueue() {
     while (splitThumbnailActive < 3 && splitThumbnailQueue.length) {
@@ -230,8 +244,9 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       splitThumbnailActive++;
       request('thumbnail',item.path,undefined,which).then(file => {
         if (source !== 'split' || token !== splitTokens[which] || !thumb.isConnected) return;
-        const url = URL.createObjectURL(file), image = document.createElement('img'); splitThumbnailURLs[which].push(url); image.alt = '';
-        image.onload = () => { if (source === 'split' && token === splitTokens[which] && thumb.isConnected) thumb.replaceChildren(image); }; image.src = url;
+        const key = splitThumbnailKey(item), cache = splitThumbnailCache[which];
+        if (cache.has(key)) { displaySplitThumbnail(thumb,cache.get(key),which,token); return; }
+        const url = URL.createObjectURL(file); cache.set(key,url); displaySplitThumbnail(thumb,url,which,token);
       }).catch(() => {}).finally(() => { splitThumbnailActive--; runSplitThumbnailQueue(); });
     }
   }
@@ -257,19 +272,20 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     $('workspace').classList.add('browsing-folder'); $('dropzone').hidden = true; $('folder-explorer').hidden = true; $('split-explorer').hidden = false;
     $('split-instruction').textContent = `Drag and drop files and folders between this device and ${remote.device}.`; $('split-instruction').hidden = false;
     for (const id of ['shared-tab','local-browse-tab','browse-tab','split-tab']) { const selected = id === 'split-tab'; $(id).classList.toggle('selected',selected); $(id).setAttribute('aria-pressed',String(selected)); }
-    splitPaths.local = []; splitPaths.remote = []; splitQuery.local = ''; splitQuery.remote = ''; splitSearchOpen.local = false; splitSearchOpen.remote = false; void loadSplit('local'); void loadSplit('remote');
+    splitPaths.local = []; splitPaths.remote = []; splitQuery.local = ''; splitQuery.remote = ''; splitEntries.local = null; splitEntries.remote = null; splitSearchOpen.local = false; splitSearchOpen.remote = false; void loadSplit('local'); void loadSplit('remote');
   }
-  async function loadSplit(which, preserveSelection = false, quiet = false) {
+  async function loadSplit(which, preserveSelection = false, quiet = false, reuseEntries = false) {
     if (source !== 'split') return;
     const pane = $(`split-${which}`), path = [...splitPaths[which]], token = ++splitTokens[which];
+    splitPending[which] = true;
     const query = splitQuery[which].trim();
     let prefetched;
     if (quiet) {
       try { prefetched = await request(query ? 'search' : 'list',path,query,which); }
-      catch (error) { const message = pane.querySelector('.split-status'); if (message && token === splitTokens[which]) message.textContent = error.message; return; }
+      catch (error) { const message = pane.querySelector('.split-status'); if (token === splitTokens[which]) { splitPending[which] = false; if (message) message.textContent = error.message; } return; }
       if (source !== 'split' || token !== splitTokens[which]) return;
     }
-    clearSplitThumbnails(which);
+    clearSplitThumbnails(which,true);
     pane.replaceChildren(); if (!preserveSelection) { splitSelections[which].clear(); splitSelectMode[which] = false; splitAnchors[which] = null; }
     const title = document.createElement('strong'); title.textContent = which === 'local' ? 'This device' : remote.device;
     const toolbar = document.createElement('div'); toolbar.className = 'explorer-toolbar split-toolbar';
@@ -334,7 +350,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     selectButton.onclick = () => { splitSelectMode[which] = !splitSelectMode[which]; selectButton.setAttribute('aria-pressed',String(splitSelectMode[which])); if (!splitSelectMode[which]) { splitSelections[which].clear(); splitAnchors[which] = null; pane.querySelectorAll('.split-item').forEach(row => { row.classList.remove('selected'); }); } };
     const searchButton = document.createElement('button'); searchButton.type = 'button'; searchButton.className = 'explorer-icon'; searchButton.title = 'Search folder'; searchButton.setAttribute('aria-label','Search folder'); searchButton.setAttribute('aria-expanded',String(splitSearchOpen[which])); searchButton.innerHTML = '<i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>';
     const views = document.createElement('div'); views.className = 'view-toggle'; views.setAttribute('aria-label','Display type');
-    for (const [name,icon] of [['cards','fa-grip'],['list','fa-list']]) { const button = document.createElement('button'); button.type = 'button'; button.title = name === 'cards' ? 'Card view' : 'List view'; button.setAttribute('aria-label',button.title); button.setAttribute('aria-pressed',String(splitView[which] === name)); button.innerHTML = `<i class="fa-solid ${icon}" aria-hidden="true"></i>`; button.onclick = () => { splitView[which] = name; void loadSplit(which,true); }; views.append(button); }
+    for (const [name,icon] of [['cards','fa-grip'],['list','fa-list']]) { const button = document.createElement('button'); button.type = 'button'; button.title = name === 'cards' ? 'Card view' : 'List view'; button.setAttribute('aria-label',button.title); button.setAttribute('aria-pressed',String(splitView[which] === name)); button.innerHTML = `<i class="fa-solid ${icon}" aria-hidden="true"></i>`; button.onclick = () => { if (splitView[which] === name) return; splitView[which] = name; const cached = splitEntries[which]; if (!splitPending[which] && cached && cached.query === splitQuery[which].trim() && JSON.stringify(cached.path) === JSON.stringify(splitPaths[which])) void loadSplit(which,true,false,true); else for (const child of views.children) child.setAttribute('aria-pressed',String(child === button)); }; views.append(button); }
     const newFolder = document.createElement('button'); newFolder.type = 'button'; newFolder.className = 'explorer-icon'; newFolder.title = 'New folder'; newFolder.setAttribute('aria-label','New folder'); newFolder.innerHTML = '<i class="fa-solid fa-folder-plus" aria-hidden="true"></i>';
     newFolder.onclick = () => startNewFolder(which, pane, path);
     actions.append(selectButton,searchButton,newFolder,views); toolbar.append(crumbs,actions);
@@ -356,8 +372,11 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     const hint = document.createElement('p'); hint.className = 'split-hint'; hint.textContent = 'Select multiple files and folders to drag and transfer together. Ctrl+A to select all.';
     pane.append(title,toolbar,searchRow,contentArea,message,hint);
     try {
-      const items = quiet ? prefetched : await request(query ? 'search' : 'list',path,query,which);
+      const items = reuseEntries ? splitEntries[which].items : quiet ? prefetched : await request(query ? 'search' : 'list',path,query,which);
       if (source !== 'split' || token !== splitTokens[which]) return;
+      splitEntries[which] = {path,query,items};
+      const validThumbnails = new Set(items.filter(isImage).map(splitThumbnailKey));
+      for (const [key,url] of splitThumbnailCache[which]) if (!validThumbnails.has(key)) { URL.revokeObjectURL(url); splitThumbnailCache[which].delete(key); }
       message.textContent = '';
       count.textContent = `${items.length} ${items.length === 1 ? 'item' : 'items'}${query ? ' found' : ''}`; count.hidden = false;
       if (!items.length) { const empty = document.createElement('p'); empty.className = 'split-empty'; empty.textContent = query ? 'No matching files found.' : 'This folder is empty.'; list.append(empty); }
@@ -402,15 +421,14 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
         row.addEventListener('contextmenu',event => showRenameMenu(event,item,which,label,() => loadSplit(which),text => { message.textContent = text; }));
         if (item.kind === 'directory') label.onclick = () => { splitPaths[which] = item.path; splitQuery[which] = ''; void loadSplit(which); };
         else label.onclick = () => openPreview(item.name, () => request('file',item.path,undefined,which));
-        row.addEventListener('dragstart',event => { draggedFiles = {which, items:checked.has(selectionKey(item)) ? [...checked.values()] : [item]}; event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('text/plain',item.name); });
-        row.addEventListener('dragend',() => { draggedFiles = null; document.querySelectorAll('.split-pane').forEach(p => p.classList.remove('drop-target')); });
+        enableItemDrag(row,item,which,true);
         if (splitView[which] === 'cards') {
           row.addEventListener('click',event => { if (!splitSelectMode[which] && !event.target.closest('button, input')) label.click(); });
           const thumb = document.createElement('button'); thumb.type = 'button'; thumb.className = 'folder-thumb'; thumb.setAttribute('aria-label',`${item.kind === 'directory' ? 'Open' : 'Preview'} ${item.name}`); thumb.append(icon); thumb.onclick = () => label.click();
           label.className = 'folder-item-name';
           const meta = document.createElement('div'); meta.className = 'folder-item-meta'; meta.textContent = item.kind === 'directory' ? 'Folder' : size(item.size);
           row.append(thumb,label,meta,splitActionButtons(item,which,message));
-          if (isImage(item) && splitThumbnailObservers[which]) { thumb._thumbnailItem = item; splitThumbnailObservers[which].observe(thumb); }
+          if (isImage(item)) { const cached = splitThumbnailCache[which].get(splitThumbnailKey(item)); if (cached) displaySplitThumbnail(thumb,cached,which,token); else if (splitThumbnailObservers[which]) { thumb._thumbnailItem = item; splitThumbnailObservers[which].observe(thumb); } }
         } else { const name = row.insertCell(); label.className = 'folder-item-name'; name.append(icon,label); row.insertCell().textContent = item.kind === 'file' ? size(item.size) : '—'; row.insertCell().textContent = fileType(item); row.insertCell().textContent = item.modified ? new Date(item.modified).toLocaleDateString() : '—'; }
         listBody.append(row);
       }
@@ -430,7 +448,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       }
       requestAnimationFrame(() => updateSplitFades(which));
     } catch (error) { if (source === 'split' && token === splitTokens[which]) message.textContent = error.message; }
-    finally { if (token === splitTokens[which]) { loading.hidden = true; list.removeAttribute('aria-busy'); } }
+    finally { if (token === splitTokens[which]) { splitPending[which] = false; loading.hidden = true; list.removeAttribute('aria-busy'); } }
   }
   function refreshLocalView() {
     if (source === 'split') void loadSplit('local',true,true);
@@ -444,17 +462,18 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       Promise.resolve(sendMessage({type:'folder-request',id,operation,path,name,kind})).catch(error => { clearTimeout(timer); pending.delete(id); reject(error); });
     });
   }
-  async function renameLocal(path, kind, name, base) {
-    if (!base || root !== base || !isConnected() || !safePath(path) || !path.length || !safePath([name])) throw new Error('Invalid name or folder unavailable.');
-    if (path.at(-1) === name) return;
-    const parent = await directory(path.slice(0,-1),base), oldName = path.at(-1);
+  async function renameLocal(path, kind, name, base, destination = path.slice(0,-1)) {
+    if (!base || root !== base || !isConnected() || !safePath(path) || !path.length || !safePath([name]) || !safePath(destination)) throw new Error('Invalid name or folder unavailable.');
+    if (kind === 'directory' && path.every((part,index) => destination[index] === part)) throw new Error('A folder cannot be moved into itself.');
+    if (path.at(-1) === name && JSON.stringify(path.slice(0,-1)) === JSON.stringify(destination)) return;
+    const parent = await directory(path.slice(0,-1),base), targetParent = await directory(destination,base), oldName = path.at(-1);
     for (const getter of ['getFileHandle','getDirectoryHandle']) {
-      try { await parent[getter](name); throw new Error('An item with that name already exists.'); }
+      try { await targetParent[getter](name); throw new Error('An item with that name already exists.'); }
       catch (error) { if (error.name === 'TypeMismatchError') throw new Error('An item with that name already exists.'); if (error.name !== 'NotFoundError') throw error; }
     }
     const handle = kind === 'directory' ? await parent.getDirectoryHandle(oldName) : await parent.getFileHandle(oldName);
     if (typeof handle.move === 'function') {
-      try { await handle.move(name); return; }
+      try { if (JSON.stringify(path.slice(0,-1)) === JSON.stringify(destination)) await handle.move(name); else await handle.move(targetParent,name); return; }
       catch (error) { if (error.name !== 'NotSupportedError') throw error; }
     }
     async function copyEntry(original, destParent, newName) {
@@ -475,9 +494,40 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       for (const child of children) { const saved = snapshot.children.find(entry => entry.name === child.name && entry.kind === child.kind); if (!saved || !(await verify(child,saved))) return false; }
       return true;
     }
-    const snapshot = await copyEntry(handle,parent,name);
+    const snapshot = await copyEntry(handle,targetParent,name);
     if (root !== base || !isConnected() || !(await verify(handle,snapshot))) throw new Error('The original changed during rename and was kept alongside the copy.');
     await parent.removeEntry(oldName,{recursive:kind === 'directory'});
+  }
+  function enableItemDrag(element, item, which, split = false) {
+    element.draggable = true;
+    element.addEventListener('dragstart',event => {
+      const selection = split ? splitSelections[which] : selected;
+      draggedFiles = {which,split,items:selection.has(selectionKey(item)) ? [...selection.values()] : [item]};
+      event.dataTransfer.effectAllowed = split ? 'copyMove' : 'move'; event.dataTransfer.setData('text/plain',item.name);
+    });
+    element.addEventListener('dragend',() => { draggedFiles = null; document.querySelectorAll('.drop-target, .folder-drop-target').forEach(node => node.classList.remove('drop-target','folder-drop-target')); });
+    if (item.kind !== 'directory') return;
+    const accepts = () => draggedFiles && draggedFiles.which === which && draggedFiles.split === split && draggedFiles.items.every(entry => !entry.path.every((part,index) => item.path[index] === part));
+    element.addEventListener('dragover',event => { if (!accepts()) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'; element.classList.add('folder-drop-target'); });
+    element.addEventListener('dragleave',event => { if (!element.contains(event.relatedTarget)) element.classList.remove('folder-drop-target'); });
+    element.addEventListener('drop',async event => {
+      if (!accepts()) return;
+      event.preventDefault(); event.stopPropagation(); element.classList.remove('folder-drop-target');
+      const dragged = draggedFiles.items, items = dragged.filter(entry => !dragged.some(other => other !== entry && other.kind === 'directory' && other.path.length < entry.path.length && other.path.every((part,index) => entry.path[index] === part)));
+      draggedFiles = null;
+      const report = text => { if (split) { const message = $(`split-${which}`).querySelector('.split-status'); if (message) message.textContent = text; } else status(text); };
+      let errorMessage = '';
+      try {
+        for (const entry of items) {
+          report(`Moving ${entry.name}…`);
+          if (which === 'local') await renameLocal(entry.path,entry.kind,entry.name,root,item.path);
+          else await streamControl('move',entry.path,item.path,entry.kind);
+        }
+      } catch (error) { errorMessage = error.message || 'Could not move the item.'; }
+      if (split && source === 'split') await loadSplit(which);
+      else if (!split && source === which) await load();
+      if (errorMessage) report(errorMessage);
+    });
   }
   function editName(label, initial, submit, report) {
     const row = label.closest('.folder-table tbody tr'), rowHeight = row?.getBoundingClientRect().height;
@@ -589,12 +639,12 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
   function abortIncomingStreams() {
     for (const [id,state] of incomingStreams) { incomingStreams.delete(id); clearTimeout(state.timer); void state.writable.abort().catch(() => {}); }
   }
-  function streamControl(operation, path, query) {
+  function streamControl(operation, path, query, kind) {
     const id = crypto.randomUUID();
     return new Promise((resolve,reject) => {
       const timer = setTimeout(() => { pending.delete(id); reject(new Error('The other device did not respond.')); },120000);
       pending.set(id,{resolve,reject,timer});
-      Promise.resolve(sendMessage({type:'folder-request',id,operation,path,query})).catch(error => { clearTimeout(timer); pending.delete(id); reject(error); });
+      Promise.resolve(sendMessage({type:'folder-request',id,operation,path,query,kind})).catch(error => { clearTimeout(timer); pending.delete(id); reject(error); });
     });
   }
   async function sendStreamChunk(streamId, offset, data, onProgress) {
@@ -818,20 +868,26 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     }).catch(error => { zipLibrary = null; throw error; });
     return zipLibrary;
   }
-  async function folderArchive(item, which, report = status) {
+  async function folderArchive(item, which, report = status, measureDownload = false) {
     const generation = remoteGeneration, Zip = await loadZipLibrary(), zip = new Zip();
+    let transferred = 0, elapsed = 0;
     async function addFolder(path, target) {
       if (generation !== remoteGeneration || !isConnected()) throw new Error('The shared folder is no longer available.');
       const children = await request('list',path,undefined,which);
       for (const child of children) {
         if (generation !== remoteGeneration || !isConnected()) throw new Error('The shared folder is no longer available.');
         if (child.kind === 'directory') await addFolder(child.path,target.folder(child.name));
-        else { report(`Fetching ${child.name}…`); target.file(child.name,await request('file',child.path,undefined,which)); }
+        else {
+          report(`Fetching ${child.name}…`); const started = performance.now(), file = await request('file',child.path,undefined,which);
+          if (measureDownload && which === 'remote') { transferred += file.size; elapsed += Math.max(1,performance.now() - started); }
+          target.file(child.name,file);
+        }
       }
     }
     await addFolder(item.path,zip.folder(item.name));
     report('Preparing download…'); const blob = await zip.generateAsync({type:'blob'});
     if (generation !== remoteGeneration || !isConnected()) throw new Error('The shared folder is no longer available.');
+    if (measureDownload && which === 'remote') recordTransfer(transferred,elapsed);
     return new File([blob],`${item.name}.zip`,{type:'application/zip'});
   }
   function downloadFile(file) { const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url),60000); }
@@ -856,6 +912,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
   }
   async function downloadLargeToHandle(item, handle, generation) {
     const writable = await handle.createWritable();
+    const started = performance.now();
     try {
       for (let offset = 0; offset < item.size; offset += CHUNK_SIZE) {
         if (generation !== remoteGeneration || !isConnected() || source !== 'remote') throw new Error('The shared folder is no longer available.');
@@ -867,6 +924,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       }
       if (generation !== remoteGeneration || !isConnected() || source !== 'remote') throw new Error('The shared folder is no longer available.');
       await writable.close();
+      if (generation === remoteGeneration && isConnected() && source === 'remote') recordTransfer(item.size,Math.max(1,performance.now() - started));
     } catch (error) { await writable.abort().catch(() => {}); throw error; }
   }
   async function uniqueDownloadHandle(directoryHandle, filename) {
@@ -878,8 +936,14 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     }
     return directoryHandle.getFileHandle(name,{create:true});
   }
+  async function fetchDownloadFile(item) {
+    const generation = remoteGeneration, started = performance.now();
+    const file = await request('file',item.path,undefined,'remote');
+    if (generation !== remoteGeneration || !isConnected() || source !== 'remote') throw new Error('The shared folder is no longer available.');
+    recordTransfer(file.size,Math.max(1,performance.now() - started)); return file;
+  }
   async function fileAction(item, action) {
-    if (item.kind === 'directory') { status(`Fetching ${item.name}…`); try { downloadFile(await folderArchive(item,'remote')); status(''); } catch (error) { status(error.message); } return; }
+    if (item.kind === 'directory') { status(`Fetching ${item.name}…`); try { downloadFile(await folderArchive(item,'remote',status,true)); status(''); } catch (error) { status(error.message); } return; }
     if (action === 'download' && source === 'remote' && item.size >= STREAM_THRESHOLD && window.showSaveFilePicker) {
       const generation = remoteGeneration;
       try { const handle = await window.showSaveFilePicker({suggestedName:item.name}); status(`Downloading ${item.name}…`); await downloadLargeToHandle(item,handle,generation); status(''); }
@@ -887,11 +951,11 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       return;
     }
     if (action === 'share' && isConnected()) sendMessage({type:'folder-show-shared'});
-    if (action === 'download' && isIOS() && imageType({name:item.name, type:item.type || ''})) { void openPreview(item.name, () => request('file', item.path)); return; }
+    if (action === 'download' && isIOS() && imageType({name:item.name, type:item.type || ''})) { void openPreview(item.name, () => fetchDownloadFile(item)); return; }
     const generation = remoteGeneration;
     status(`Fetching ${item.name}…`);
     try {
-      const file = await request('file',item.path);
+      const file = action === 'download' && source === 'remote' ? await fetchDownloadFile(item) : await request('file',item.path);
       if (generation !== remoteGeneration || !isConnected()) throw new Error('The shared folder is no longer available.');
       if (action === 'share') { await shareFile(file); status(''); }
       else if (action === 'copy') { await copyFile(file); status(''); }
@@ -918,7 +982,9 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     wrapper.append(table); container.append(wrapper);
   }
   function render(query) {
-    clearThumbnails();
+    clearThumbnails(true);
+    const validThumbnails = new Set(entries.filter(isImage).map(thumbnailKey));
+    for (const [key,url] of thumbnailCache) if (!validThumbnails.has(key)) { URL.revokeObjectURL(url); thumbnailCache.delete(key); }
     if (view === 'cards' && window.IntersectionObserver) {
       const generation = thumbnailGeneration;
       thumbnailObserver = new IntersectionObserver(records => {
@@ -933,10 +999,11 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     const content = $('folder-content'); content.replaceChildren(); status(entries.length ? `${entries.length} ${entries.length === 1 ? 'item' : 'items'}${query ? ' found' : ''}` : (query ? 'No matching files found.' : 'This folder is empty.'));
     $('folder-content-area').classList.toggle('no-search-results', !!query && !entries.length);
     requestAnimationFrame(updateCardFades);
-    if (!query) { (view === 'cards' ? renderCards : renderList)(entries,content); return; }
+    if (!query) { (view === 'cards' ? renderCards : renderList)(entries,content); for (const element of content.querySelectorAll('.folder-card, tbody tr')) enableItemDrag(element,element._folderItem,source); return; }
     const groups = new Map();
     for (const item of entries) { const path = item.path.slice(currentPath.length,-1), key = JSON.stringify(path); if (!groups.has(key)) groups.set(key,{path,items:[]}); groups.get(key).items.push(item); }
     for (const group of groups.values()) { const section = document.createElement('section'); section.className = 'search-group'; const path = document.createElement('button'); path.type = 'button'; path.className = 'search-path'; const icon = document.createElement('i'); icon.className = 'fa-regular fa-folder-open'; path.append(icon,document.createTextNode(group.path.length ? group.path.join(' › ') : 'Current folder')); const target = [...currentPath, ...group.path]; path.onclick = () => navigate(target); section.append(path); (view === 'cards' ? renderCards : renderList)(group.items,section); content.append(section); }
+    for (const element of content.querySelectorAll('.folder-card, tbody tr')) enableItemDrag(element,element._folderItem,source);
   }
   function updateSelection() {
     $('folder-select').setAttribute('aria-pressed', String(selectionMode));
@@ -999,7 +1066,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
         if (generation !== remoteGeneration || !isConnected()) throw new Error('The shared folder is no longer available.');
         status(`Fetching ${item.name}…`);
         if (item.kind === 'file' && item.size >= STREAM_THRESHOLD && (singleHandle || directoryHandle)) { const handle = singleHandle || await uniqueDownloadHandle(directoryHandle,item.name); await downloadLargeToHandle(item,handle,generation); continue; }
-        const file = item.kind === 'directory' ? await folderArchive(item,source) : await request('file',item.path);
+        const file = item.kind === 'directory' ? await folderArchive(item,source,status,source === 'remote') : source === 'remote' ? await fetchDownloadFile(item) : await request('file',item.path);
         if (generation !== remoteGeneration || !isConnected()) throw new Error('The shared folder is no longer available.');
         if (source === 'local') await shareFile(file);
         else { const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url),60000); }

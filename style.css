@@ -214,6 +214,8 @@ main:has(#split-tab:not([hidden])) .folder-tabs button:first-child,main:has(#spl
 .split-list{scrollbar-width:thin;scrollbar-color:#b8cbd9 transparent}.split-list::-webkit-scrollbar{width:8px;height:8px}.split-list::-webkit-scrollbar-track,.split-list::-webkit-scrollbar-corner{background:transparent}.split-list::-webkit-scrollbar-thumb{background:#b8cbd9;border-radius:999px}html[data-theme=dark] .split-list{scrollbar-color:#3b5269 transparent}html[data-theme=dark] .split-list::-webkit-scrollbar-thumb{background:#3b5269}
 
 .split-content-area{position:relative;display:flex;flex:1;min-width:0;min-height:180px}.split-content-area .split-list{width:100%;padding-bottom:30px}.split-item-count{position:absolute;right:10px;bottom:0;z-index:1;padding:8px 12px;border-radius:12px 0 0 0;background:var(--panel);box-shadow:10px 0 var(--panel);color:var(--muted);font-size:.75rem;pointer-events:none}
+.split-content-area .split-empty{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none}
+.folder-card.folder-drop-target{outline:2px solid var(--blue);outline-offset:-2px;background:var(--raised)}.folder-table tr.folder-drop-target td{background:color-mix(in srgb,var(--blue) 20%,var(--panel))}
 
 .split-cards{grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:12px}.split-cards .split-item.folder-card{display:block;min-height:0;padding:11px}.split-cards .split-item.folder-card .folder-thumb{width:100%;height:100px;padding:0;font-size:2rem;text-align:center}.split-cards .split-item.folder-card .folder-thumb i{font-size:inherit}.split-cards .split-item.folder-card .folder-item-name{display:block}.split-cards .split-item.folder-card .folder-item-actions button{flex:1}.split-cards .split-item.folder-card .folder-item-actions i{font-size:inherit}
 
@@ -238,7 +240,7 @@ html[data-theme] .folder-card.selected,html[data-theme] .split-cards .split-item
 .split-crumbs .breadcrumb-expand{flex:none;padding:2px 7px;margin-left:3px;background:var(--raised);color:var(--text);font-weight:700}.split-crumbs .breadcrumb.expanded{overflow:visible;white-space:normal}.split-toolbar:has(.breadcrumb.expanded){align-items:flex-start}
 
 .folder-name-input{padding:2px 7px;border:1px solid #c8d8e3;outline:none}.folder-name-input:focus{outline:none}html[data-theme=dark] .folder-name-input{border-color:#405468}
-.view-toggle{background:var(--raised)}
+.view-toggle{background:var(--raised)}.view-toggle button{border-radius:7.5px}
 .folder-table tbody tr:has(.folder-name-input) td{padding-top:4px;padding-bottom:4px}
 .split-copy-overlay .split-copy-progress{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}.split-copy-details{position:absolute;top:calc(50% + 35px);left:20px;right:20px;display:flex;flex-direction:column;align-items:center;gap:12px;overflow-wrap:anywhere}
 
