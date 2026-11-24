@@ -7,6 +7,7 @@ const words = 'amber apple beach birch blue breeze brook cedar cloud coral dawn 
 const random = max => { const limit = Math.floor(4294967296 / max) * max; let n; do { n = crypto.getRandomValues(new Uint32Array(1))[0]; } while (n >= limit); return n % max; };
 const createCredentials = () => ({code:Array.from({length:4}, () => words[random(words.length)]).join('-'), passcode:String(random(1000000)).padStart(6,'0')});
 const valid = c => c && /^[a-z]+(?:-[a-z]+){3}$/.test(c.code) && /^\d{6}$/.test(c.passcode);
+window.addEventListener('hashchange', () => location.reload());
 const fragment = decodeURIComponent(location.hash.slice(1)).split(':');
 const supplied = {code:fragment[0], passcode:fragment[1]};
 const credentials = valid(supplied) ? supplied : createCredentials();
@@ -75,6 +76,14 @@ $('manual-room').addEventListener('keydown', event => {
 $('manual-passcode').addEventListener('input', tryManualPairing);
 
 let room, sendControl, sendFile, connected = false, peerId = null, epoch = 0, noticeTimer, reconnectTimer = null;
+let transferredBytes = 0, transferMilliseconds = 0;
+function recordTransfer(bytes, milliseconds, notifyPeer = true) {
+  if (!Number.isFinite(bytes) || bytes <= 0 || !Number.isFinite(milliseconds) || milliseconds <= 0) return;
+  transferredBytes += bytes; transferMilliseconds += milliseconds;
+  const mbps = transferredBytes * 8 / transferMilliseconds / 1000;
+  $('connection-speed').textContent = `${mbps < 10 ? mbps.toFixed(2) : mbps.toFixed(1)} Mbps`;
+  if (notifyPeer && connected) void sendControl({type:'transfer-speed',bytes,milliseconds},peerId);
+}
 let initialConnectionTimedOut = false, turnUnavailable = false;
 let connectionStage = 'Preparing the connection…';
 let showConnectionDetail = false;
@@ -148,7 +157,7 @@ function clearFiles() { pendingClipboard = null; epoch++; for (const id of incom
 async function transfer(file, clipboard = false) {
   if (!connected) { notify('Connect another device before adding files.'); return; }
   const id = crypto.randomUUID(), transferEpoch = epoch, target = peerId; addFile(id,file,'Sending…'); sendControl({type:'file-start',id},target);
-  try { const data = await file.arrayBuffer(); if (!connected || transferEpoch !== epoch || target !== peerId) return; await sendFile(data,target,{id,name:file.name,type:file.type,lastModified:file.lastModified,clipboard}); if (transferEpoch === epoch && files.has(id)) { files.get(id).status = ''; render(); } }
+  try { const data = await file.arrayBuffer(); if (!connected || transferEpoch !== epoch || target !== peerId) return; const started = performance.now(); await sendFile(data,target,{id,name:file.name,type:file.type,lastModified:file.lastModified,clipboard}); if (connected && target === peerId && transferEpoch === epoch && !clipboard) recordTransfer(file.size,Math.max(1,performance.now() - started)); if (transferEpoch === epoch && files.has(id)) { files.get(id).status = ''; render(); } }
   catch (error) { if (transferEpoch === epoch && files.has(id)) { files.get(id).status = 'Transfer failed'; render(); notify(`Could not send ${file.name}. Please try again.`); } console.warn('Transfer failed:',error); }
 }
 async function resendSharedFiles(target) {
@@ -270,10 +279,11 @@ async function start() {
     room = joinRoom({appId:'synccopypaste-v1',password,maxUsers:2,rtcConfig:{iceServers}},roomCode);
     const control = room.makeAction('control'), fileAction = room.makeAction('file'), folderFileAction = room.makeAction('folder-file');
     folderFileAction.onMessage((data, context) => folders.onBytes(data, context));
-    sendFolderBytes = (data, target, metadata) => folderFileAction.send(data, {target, metadata});
+    folderFileAction.onReceiveProgress((progress, context) => folders.onProgress(progress, context));
+    sendFolderBytes = (data, target, metadata, onProgress) => folderFileAction.send(data, {target, metadata, onProgress});
     sendControl = (message, target) => control.send(message, target ? {target} : undefined);
     sendFile = (data, target, metadata) => fileAction.send(data, {target, metadata});
-    control.onMessage((message, context) => { const from = context.peerId; if (from !== peerId || !message) return; if (message.type?.startsWith('folder-')) { folders.onControl(message,from); return; } if (message.type === 'hello') { void handleHello(message,from); } else if (message.type === 'clipboard-sync') { peerClipboardEnabled = message.enabled === true; if (!peerClipboardEnabled) pendingClipboard = null; updateClipboardStatus(); if (peerClipboardEnabled && !clipboardEnabled) void enableClipboard(false); else if (peerClipboardEnabled) void checkClipboard(); } else if (message.type === 'file-start' && typeof message.id === 'string') incoming.add(message.id); else if (message.type === 'clear') { clearFiles(); notify('The shared files were cleared.'); } });
+    control.onMessage((message, context) => { const from = context.peerId; if (from !== peerId || !message) return; if (message.type?.startsWith('folder-')) { folders.onControl(message,from); return; } if (message.type === 'transfer-speed') { recordTransfer(message.bytes,message.milliseconds,false); } else if (message.type === 'hello') { void handleHello(message,from); } else if (message.type === 'clipboard-sync') { peerClipboardEnabled = message.enabled === true; if (!peerClipboardEnabled) pendingClipboard = null; updateClipboardStatus(); if (peerClipboardEnabled && !clipboardEnabled) void enableClipboard(false); else if (peerClipboardEnabled) void checkClipboard(); } else if (message.type === 'file-start' && typeof message.id === 'string') incoming.add(message.id); else if (message.type === 'clear') { clearFiles(); notify('The shared files were cleared.'); } });
     fileAction.onMessage((data, context) => { const {peerId: from, metadata} = context; if (!connected || from !== peerId || !metadata || typeof metadata.id !== 'string' || typeof metadata.name !== 'string' || !(data instanceof Uint8Array)) return; incoming.delete(metadata.id); if (discarded.delete(metadata.id)) return; const file = new File([data],metadata.name,{type:typeof metadata.type === 'string' ? metadata.type : '',lastModified:Number.isFinite(metadata.lastModified) ? metadata.lastModified : Date.now()}); addFile(metadata.id,file); if (metadata.clipboard && clipboardEnabled && peerClipboardEnabled) void receiveClipboard(file); });
     async function handleHello(message, from) {
       if (selectedDevice && message.identity !== selectedDevice.id) {
@@ -297,6 +307,7 @@ async function start() {
       clearTimeout(connectionDetailTimer);
       $('connecting-detail').hidden = true;
       clearTimeout(reconnectTimer); reconnectTimer = null; peerId = id; connected = true;
+      updateConnectionDetails();
       $('connection-lost').hidden = true; $('connecting-overlay').hidden = true;
       if (!selectedDevice) { $('remembered').hidden = true; $('pairing').hidden = true; $('workspace').hidden = false; }
       if (!reconnecting && window.matchMedia('(max-width: 500px)').matches) $('workspace').scrollIntoView({behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block:'start'});
@@ -308,6 +319,8 @@ async function start() {
       const id = typeof context === 'string' ? context : context.peerId;
       if (id !== peerId) return;
       connected = false; peerId = null; peerClipboardEnabled = false;
+      transferredBytes = 0; transferMilliseconds = 0; $('connection-speed').textContent = '—';
+      updateConnectionDetails();
       if (!valid(supplied)) {
         $('connecting-text').textContent = 'Reconnecting...'; $('connecting-overlay').hidden = false;
         reconnectTimer = setTimeout(() => {
@@ -323,15 +336,62 @@ async function start() {
     $('connection-status').textContent = 'Waiting for another device…';
   } catch (error) { if (!initialConnectionTimedOut && !valid(supplied)) { $('connecting-overlay').hidden = true; $('connection-status').textContent = 'Could not start the connection. Reload to try again.'; } console.error(error); }
 }
+let connectionStatsTimer = null, connectionStatsGeneration = 0;
+function setConnectionDetails(type, transport, rtt) {
+  $('connection-type').textContent = type;
+  $('connection-transport').textContent = transport;
+  $('connection-rtt').textContent = rtt;
+}
+function updateConnectionDetails() {
+  clearInterval(connectionStatsTimer); connectionStatsTimer = null;
+  const generation = ++connectionStatsGeneration;
+  $('connection-details').hidden = !betaEnabled;
+  if (!betaEnabled) return;
+  setConnectionDetails(connected ? 'Checking…' : 'Not connected', '—', '—');
+  if (!connected) return;
+  const currentPeer = peerId;
+  let busy = false;
+  const refresh = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const peer = room?.getPeers?.()?.[currentPeer];
+      const connection = peer?.connection || peer;
+      if (typeof connection?.getStats !== 'function') throw new Error('Connection statistics unavailable');
+      const stats = await connection.getStats();
+      if (generation !== connectionStatsGeneration || !connected || peerId !== currentPeer) return;
+      let pair;
+      for (const report of stats.values()) {
+        if (report.type === 'transport' && report.selectedCandidatePairId) {
+          pair = stats.get(report.selectedCandidatePairId);
+          if (pair) break;
+        }
+      }
+      if (!pair) throw new Error('Selected connection unavailable');
+      const local = stats.get(pair.localCandidateId), remote = stats.get(pair.remoteCandidateId);
+      const types = [local?.candidateType, remote?.candidateType];
+      const type = types.includes('relay') ? 'Relayed' : types.every(Boolean) ? 'Direct' : 'Unavailable';
+      const protocol = typeof local?.protocol === 'string' ? local.protocol.toUpperCase() : 'Unavailable';
+      const rtt = Number.isFinite(pair.currentRoundTripTime) ? `${Math.round(pair.currentRoundTripTime * 1000)} ms` : 'Unavailable';
+      setConnectionDetails(type, protocol, rtt);
+    } catch {
+      if (generation === connectionStatsGeneration && connected && peerId === currentPeer) setConnectionDetails('Unavailable', 'Unavailable', 'Unavailable');
+    } finally { busy = false; }
+  };
+  void refresh();
+  connectionStatsTimer = setInterval(refresh, 5000);
+}
 let betaEnabled = false;
 try { betaEnabled = localStorage.getItem('synccopypaste-beta-features') === 'true'; } catch {}
 $('beta-features').checked = betaEnabled;
 $('clipboard-option').hidden = !betaEnabled;
 $('beta-description').hidden = !betaEnabled;
+updateConnectionDetails();
 $('beta-features').onchange = () => {
   betaEnabled = $('beta-features').checked;
   $('clipboard-option').hidden = !betaEnabled;
   $('beta-description').hidden = !betaEnabled;
+  updateConnectionDetails();
   try { localStorage.setItem('synccopypaste-beta-features', String(betaEnabled)); } catch {}
   if (!betaEnabled && clipboardEnabled) { disableClipboard(); if (connected) sendControl({type:'clipboard-sync',enabled:false}); }
 };
@@ -424,5 +484,5 @@ window.addEventListener('focus', () => { if (pendingClipboard) void retryClipboa
 document.addEventListener('click', () => { if (pendingClipboard) void retryClipboardWrite(); });
 setPreviewCopyHandler(copyFile);
 let sendFolderBytes;
-const folders = createFolderBrowser({send:(...args) => sendControl(...args),sendBytes:(...args) => sendFolderBytes(...args),isConnected:() => connected,getPeer:() => peerId,getDevice:deviceType,copyFile,openPreview});
+const folders = createFolderBrowser({send:(...args) => sendControl(...args),sendBytes:(...args) => sendFolderBytes(...args),isConnected:() => connected,getPeer:() => peerId,getDevice:deviceType,copyFile,openPreview,shareFile:transfer,recordTransfer});
 render(); start();
