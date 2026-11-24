@@ -1,7 +1,7 @@
 import {isIOS, imageType} from './image-save.js';
 // Folder handles stay on the device that selected them; the peer receives only
 // requested directory metadata and explicitly requested file contents.
-export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getDevice, copyFile, openPreview, shareFile, recordTransfer}) {
+export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getDevice, copyFile, openPreview, shareFile, recordTransfer, transferReceived}) {
   const $ = id => document.getElementById(id);
   let root = null, remote = null, currentPath = [], entries = [], view = 'list', sort = 'name', direction = 1, activeRequest = 0, drag = null;
   let searchTimer, remoteGeneration = 0, pathErrorTimer, pathErrorHideTimer, source = null;
@@ -101,14 +101,14 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
         if (!info || !safePath([info.name]) || !Number.isSafeInteger(info.size) || info.size < STREAM_THRESHOLD) throw new Error('Invalid transfer request.');
         const output = await openCopyWriter(info.name,message.path,base);
         if (root !== base || !isConnected() || from !== getPeer()) { await output.writable.abort().catch(() => {}); return; }
-        const streamId = crypto.randomUUID(), state = {...output,base,from,size:info.size,offset:0,writing:false,timer:null}; incomingStreams.set(streamId,state); armStreamTimeout(streamId,state);
+        const streamId = crypto.randomUUID(), state = {...output,base,from,size:info.size,offset:0,writing:false,timer:null,started:performance.now()}; incomingStreams.set(streamId,state); armStreamTimeout(streamId,state);
         sendMessage({type:'folder-response',id:message.id,entries:[streamId,output.name]});
       } else if (message.operation === 'stream-finish' || message.operation === 'stream-cancel') {
         const streamId = message.query?.streamId, state = incomingStreams.get(streamId);
         if (!state || state.from !== from || state.base !== base || state.writing) throw new Error('Transfer is unavailable.');
         if (message.operation === 'stream-finish' && state.offset !== state.size) throw new Error('Transfer is incomplete.');
         incomingStreams.delete(streamId); clearTimeout(state.timer);
-        if (message.operation === 'stream-finish') { try { await state.writable.close(); } catch (error) { await state.writable.abort().catch(() => {}); throw error; } if (isConnected() && from === getPeer()) { sendMessage({type:'folder-response',id:message.id,entries:[state.name]}); refreshLocalView(); } }
+        if (message.operation === 'stream-finish') { try { await state.writable.close(); } catch (error) { await state.writable.abort().catch(() => {}); throw error; } transferReceived('explorer',state.size,Math.max(1,performance.now()-state.started)); if (isConnected() && from === getPeer()) { sendMessage({type:'folder-response',id:message.id,entries:[state.name]}); refreshLocalView(); } }
         else { await state.writable.abort(); if (isConnected() && from === getPeer()) sendMessage({type:'folder-response',id:message.id,entries:[]}); }
       } else if (message.operation === 'read-chunk') {
         const chunk = message.query;
@@ -159,7 +159,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     const id = crypto.randomUUID();
     return new Promise((resolve,reject) => {
       const timer = setTimeout(() => { pending.delete(id); reject(new Error('The other device did not respond.')); }, operation === 'search' ? 120000 : 60000);
-      pending.set(id,{resolve,reject,timer,onProgress});
+      pending.set(id,{resolve,reject,timer,onProgress,operation,started:performance.now()});
       Promise.resolve(sendMessage({type:'folder-request',id,operation,path,query})).catch(error => { clearTimeout(timer); pending.delete(id); reject(error); });
     });
   }
@@ -673,6 +673,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
   }
   async function copyLargeFile(item, from, to, destination, generation, base, update, checkCancel) {
     let localOutput, remoteId, localFile;
+    const started = performance.now();
     const check = () => { checkCancel(); if (generation !== remoteGeneration || source !== 'split' || !isConnected() || root !== base) throw new Error('The folder connection changed.'); };
     try {
       check();
@@ -695,7 +696,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
         update((offset+length)/item.size);
       }
       check();
-      if (to === 'local') { await localOutput.writable.close(); return localOutput.name; }
+      if (to === 'local') { await localOutput.writable.close(); transferReceived('explorer',item.size,Math.max(1,performance.now()-started)); return localOutput.name; }
       const [name] = await streamControl('stream-finish',destination,{streamId:remoteId}); remoteId = null; return name;
     } catch (error) {
       if (localOutput) await localOutput.writable.abort().catch(() => {});
@@ -731,7 +732,9 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     if (!root || from !== getPeer() || typeof meta.writeId !== 'string' || !safePath(meta.path) || typeof meta.name !== 'string' || !safePath([meta.name])) return;
     const base = root;
     try {
+      const started = performance.now();
       const name = await saveCopy(new File([data],meta.name,{type:typeof meta.type === 'string' ? meta.type : ''}),meta.path,base);
+      transferReceived('explorer',data.byteLength,Math.max(1,performance.now()-started));
       if (isConnected() && from === getPeer()) sendMessage({type:'folder-response',id:meta.writeId,entries:[name]});
       refreshLocalView();
     } catch (error) { if (isConnected() && from === getPeer()) sendMessage({type:'folder-response',id:meta.writeId,error:error.message || 'Could not save the file.'}); }
@@ -924,6 +927,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       }
       if (generation !== remoteGeneration || !isConnected() || source !== 'remote') throw new Error('The shared folder is no longer available.');
       await writable.close();
+      transferReceived('explorer',item.size,Math.max(1,performance.now()-started));
       if (generation === remoteGeneration && isConnected() && source === 'remote') recordTransfer(item.size,Math.max(1,performance.now() - started));
     } catch (error) { await writable.abort().catch(() => {}); throw error; }
   }
@@ -1111,6 +1115,6 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       else if (message.type === 'folder-response') { const item = pending.get(message.id); if (!item) return; pending.delete(message.id); clearTimeout(item.timer); if (message.error) { const error = new Error(message.error); if (typeof message.errorName === 'string') error.name = message.errorName; item.reject(error); } else if (Array.isArray(message.entries)) item.resolve(message.entries); else item.reject(new Error('Invalid folder response.')); }
     },
     onProgress(progress,context) { const item = pending.get(context.metadata?.requestId); if (context.peerId === getPeer() && item?.onProgress) item.onProgress(progress); },
-    onBytes(data,context) { const meta = context.metadata; if (meta?.streamId && data instanceof Uint8Array) { void receiveStreamChunk(data,meta,context.peerId); return; } if (meta?.writeId && data instanceof Uint8Array) { void receiveCopy(data,meta,context.peerId); return; } const item = pending.get(meta?.requestId); if (!item || context.peerId !== getPeer() || !(data instanceof Uint8Array) || typeof meta.name !== 'string') return; pending.delete(meta.requestId); clearTimeout(item.timer); item.resolve(new File([data],meta.name,{type:typeof meta.type === 'string' ? meta.type : '',lastModified:Number.isFinite(meta.modified) ? meta.modified : Date.now()})); }
+    onBytes(data,context) { const meta = context.metadata; if (meta?.streamId && data instanceof Uint8Array) { void receiveStreamChunk(data,meta,context.peerId); return; } if (meta?.writeId && data instanceof Uint8Array) { void receiveCopy(data,meta,context.peerId); return; } const item = pending.get(meta?.requestId); if (!item || context.peerId !== getPeer() || !(data instanceof Uint8Array) || typeof meta.name !== 'string') return; pending.delete(meta.requestId); clearTimeout(item.timer); if (item.operation === 'file') transferReceived('explorer',data.byteLength,Math.max(1,performance.now()-item.started)); item.resolve(new File([data],meta.name,{type:typeof meta.type === 'string' ? meta.type : '',lastModified:Number.isFinite(meta.modified) ? meta.modified : Date.now()})); }
   };
 }
