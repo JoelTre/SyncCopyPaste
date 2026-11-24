@@ -10,7 +10,6 @@ const valid = c => c && /^[a-z]+(?:-[a-z]+){3}$/.test(c.code) && /^\d{6}$/.test(
 window.addEventListener('hashchange', () => location.reload());
 const fragment = decodeURIComponent(location.hash.slice(1)).split(':');
 const supplied = {code:fragment[0], passcode:fragment[1]};
-const credentials = valid(supplied) ? supplied : createCredentials();
 const rememberedKey = 'synccopypaste-devices-v1', identityKey = 'synccopypaste-identity-v1', selectionKey = 'synccopypaste-reconnect-v1';
 const randomHex = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2,'0')).join('');
 let identity, devices = [], selectedDevice = null;
@@ -24,6 +23,23 @@ try {
   const selected = sessionStorage.getItem(selectionKey); sessionStorage.removeItem(selectionKey);
   if (!valid(supplied)) selectedDevice = devices.find(d => d.id === selected) || null;
 } catch { /* The regular pairing flow remains available. */ }
+const recoveryKey = 'synccopypaste-room-recovery-v1', recoveryWindow = 60000;
+let credentials = valid(supplied) ? supplied : null;
+if (!credentials && !selectedDevice) {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(recoveryKey) || 'null');
+    const age = Date.now() - saved?.lastActive;
+    if (valid(saved) && Number.isFinite(age) && age >= 0 && age < recoveryWindow) credentials = {code:saved.code, passcode:saved.passcode};
+  } catch { /* Generate new credentials if tab storage is unavailable or invalid. */ }
+}
+credentials ||= createCredentials();
+if (!valid(supplied) && !selectedDevice) {
+  const saveActiveRoom = () => { try { sessionStorage.setItem(recoveryKey, JSON.stringify({...credentials,lastActive:Date.now()})); } catch {} };
+  saveActiveRoom();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' || document.visibilityState === 'visible') saveActiveRoom(); });
+  window.addEventListener('pagehide', () => { if (document.visibilityState === 'visible') saveActiveRoom(); });
+  setInterval(() => { if (document.visibilityState === 'visible') saveActiveRoom(); }, 10000);
+}
 const contribution = randomHex();
 async function digest(value) { return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))), b => b.toString(16).padStart(2,'0')).join(''); }
 function saveDevices() { try { localStorage.setItem(rememberedKey, JSON.stringify(devices)); return true; } catch { notify('Could not remember this device. Check browser storage settings.'); return false; } }
@@ -107,7 +123,14 @@ const initialConnectionTimer = valid(supplied) ? setTimeout(() => {
   $('cancel-connection').hidden = false;
 }, 15000) : null;
 $('retry-connection').onclick = () => location.reload();
-$('cancel-connection').onclick = () => location.replace(location.pathname + location.search);
+$('cancel-connection').onclick = () => {
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer); reconnectTimer = null; room?.leave();
+    try { sessionStorage.removeItem(recoveryKey); } catch {}
+    if (!location.hash) { location.reload(); return; }
+  }
+  location.replace(location.pathname + location.search);
+};
 const files = new Map(), incoming = new Set(), discarded = new Set();
 function notify(message) { $('notice').textContent = message; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => $('notice').textContent = '', 6000); }
 function deviceType() {
@@ -319,7 +342,7 @@ async function start() {
       $('connecting-detail').hidden = true;
       clearTimeout(reconnectTimer); reconnectTimer = null; peerId = id; connected = true;
       updateConnectionDetails();
-      $('connection-lost').hidden = true; $('connecting-overlay').hidden = true;
+      $('connection-lost').hidden = true; $('connecting-overlay').hidden = true; $('cancel-connection').hidden = true;
       if (!selectedDevice) { $('remembered').hidden = true; $('pairing').hidden = true; $('workspace').hidden = false; }
       if (!reconnecting && window.matchMedia('(max-width: 500px)').matches) $('workspace').scrollIntoView({behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block:'start'});
       if (!reconnecting) $('peer-name').textContent = 'Connected to device';
@@ -332,17 +355,12 @@ async function start() {
       connected = false; peerId = null; peerClipboardEnabled = false;
       transferredBytes = 0; transferMilliseconds = 0; $('connection-speed').textContent = '—';
       updateConnectionDetails();
-      if (!valid(supplied)) {
-        $('connecting-text').textContent = 'Reconnecting...'; $('connecting-overlay').hidden = false;
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null; $('connecting-overlay').hidden = true; disableClipboard(); folders.leave(); clearFiles();
-          $('workspace').hidden = true; $('pairing').hidden = !!selectedDevice; renderDevices(); $('connection-lost').querySelector('span').textContent = 'Failed to reconnect'; $('connection-lost').hidden = false;
-          $('connection-status').textContent = 'Waiting for another device…';
-        }, 10000);
-        return;
-      }
-      disableClipboard(); folders.leave(); clearFiles(); $('workspace').hidden = true; $('pairing').hidden = !!selectedDevice; renderDevices();
-      $('connection-lost').querySelector('span').textContent = 'Connection lost'; $('connection-lost').hidden = false; $('connection-status').textContent = 'Waiting for another device…'; notify('The other device disconnected.');
+      $('connecting-text').textContent = 'Reconnecting...'; $('cancel-connection').hidden = false; $('connecting-overlay').hidden = false;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null; $('connecting-overlay').hidden = true; disableClipboard(); folders.leave(); clearFiles();
+        $('workspace').hidden = true; $('pairing').hidden = !!selectedDevice; renderDevices(); $('connection-lost').querySelector('span').textContent = 'Failed to reconnect'; $('connection-lost').hidden = false;
+        $('connection-status').textContent = 'Waiting for another device…';
+      }, recoveryWindow);
     });
     $('connection-status').textContent = 'Waiting for another device…';
   } catch (error) { if (!initialConnectionTimedOut && !valid(supplied)) { $('connecting-overlay').hidden = true; $('connection-status').textContent = 'Could not start the connection. Reload to try again.'; } console.error(error); }

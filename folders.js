@@ -86,8 +86,8 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       for await (const handle of dir.values()) {
         if (root !== base) throw new Error('Folder sharing stopped.');
         const next = [...parts, handle.name];
+        if (handle.name.toLocaleLowerCase().includes(needle)) results.push(await info(handle, next));
         if (handle.kind === 'directory') await walk(next);
-        else if (handle.name.toLocaleLowerCase().includes(needle)) results.push(await info(handle, next));
       }
     }
     await walk(path); return results;
@@ -360,7 +360,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     const clear = document.createElement('button'); clear.type = 'button'; clear.setAttribute('aria-label','Clear search'); clear.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
     searchInput.oninput = () => { clearTimeout(splitSearchTimer[which]); splitQuery[which] = searchInput.value; splitSearchTimer[which] = setTimeout(async () => { await loadSplit(which,true); const input = $(`split-${which}`).querySelector('.folder-search-row input'); if (input && !input.closest('.folder-search-row').hidden) { input.focus(); input.setSelectionRange(input.value.length,input.value.length); } },300); };
     clear.onclick = () => { splitQuery[which] = ''; void loadSplit(which,true); };
-    searchButton.onclick = () => { splitSearchOpen[which] = !splitSearchOpen[which]; if (!splitSearchOpen[which]) splitQuery[which] = ''; void loadSplit(which,true); };
+    searchButton.onclick = () => { splitSearchOpen[which] = !splitSearchOpen[which]; if (splitSearchOpen[which]) { searchRow.hidden = false; searchButton.setAttribute('aria-expanded','true'); searchInput.focus(); } else { splitQuery[which] = ''; void loadSplit(which,true); } };
     searchRow.append(searchIcon,searchInput,clear);
     const contentArea = document.createElement('div'); contentArea.className = 'split-content-area';
     const list = document.createElement('div'); list.className = 'split-list';
@@ -379,7 +379,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
       for (const [key,url] of splitThumbnailCache[which]) if (!validThumbnails.has(key)) { URL.revokeObjectURL(url); splitThumbnailCache[which].delete(key); }
       message.textContent = '';
       count.textContent = `${items.length} ${items.length === 1 ? 'item' : 'items'}${query ? ' found' : ''}`; count.hidden = false;
-      if (!items.length) { const empty = document.createElement('p'); empty.className = 'split-empty'; empty.textContent = query ? 'No matching files found.' : 'This folder is empty.'; list.append(empty); }
+      if (!items.length) { const empty = document.createElement('p'); empty.className = 'split-empty'; empty.textContent = query ? 'No matching files or folders found.' : 'This folder is empty.'; list.append(empty); }
       const checked = splitSelections[which];
       if (splitView[which] === 'cards' && window.IntersectionObserver) {
         const observer = new IntersectionObserver(records => {
@@ -996,7 +996,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
         runThumbnailQueue();
       });
     }
-    const content = $('folder-content'); content.replaceChildren(); status(entries.length ? `${entries.length} ${entries.length === 1 ? 'item' : 'items'}${query ? ' found' : ''}` : (query ? 'No matching files found.' : 'This folder is empty.'));
+    const content = $('folder-content'); content.replaceChildren(); status(entries.length ? `${entries.length} ${entries.length === 1 ? 'item' : 'items'}${query ? ' found' : ''}` : (query ? 'No matching files or folders found.' : 'This folder is empty.'));
     $('folder-content-area').classList.toggle('no-search-results', !!query && !entries.length);
     requestAnimationFrame(updateCardFades);
     if (!query) { (view === 'cards' ? renderCards : renderList)(entries,content); for (const element of content.querySelectorAll('.folder-card, tbody tr')) enableItemDrag(element,element._folderItem,source); return; }
