@@ -30,6 +30,7 @@ export function setAnalyticsEnabled(value) {
   enabled = value;
   try { localStorage.setItem(settingKey, String(value)); } catch {}
   if (!value) { counters = {}; pending = null; void post({id:crypto.randomUUID(), counters:{opt_outs:1}}, true).catch(() => {}); }
+  location.reload();
 }
 setInterval(() => void flush(), 60000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void flush(true); });

@@ -6,7 +6,10 @@ import {openPreview, setPreviewCopyHandler} from './preview.js';
 import {FEEDBACK_ENDPOINT} from './feedback-config.js';
 const $ = id => document.getElementById(id);
 $('analytics-enabled').checked = analyticsEnabled();
-$('analytics-enabled').addEventListener('change', event => setAnalyticsEnabled(event.target.checked));
+$('analytics-enabled').addEventListener('change', event => {
+  if (!confirm('Changing analytics reloads all open SyncCopyPaste pages, ends active connections, and clears shared items. Continue?')) { event.target.checked = analyticsEnabled(); return; }
+  setAnalyticsEnabled(event.target.checked);
+});
 const words = 'amber apple beach birch blue breeze brook cedar cloud coral dawn delta dune eagle earth fern field flame forest frost garden golden harbor hazel hill island ivy jade lake leaf lemon light maple meadow mist moon mountain ocean olive orange orchid pine plum river rose silver sky snow solar star stone sun tiger valley violet willow wind winter'.split(' ');
 const random = max => { const limit = Math.floor(4294967296 / max) * max; let n; do { n = crypto.getRandomValues(new Uint32Array(1))[0]; } while (n >= limit); return n % max; };
 const createCredentials = () => ({code:Array.from({length:4}, () => words[random(words.length)]).join('-'), passcode:String(random(1000000)).padStart(6,'0')});
