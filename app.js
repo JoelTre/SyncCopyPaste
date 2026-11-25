@@ -1,3 +1,4 @@
+import {prepareCopyButton, startCopy, finishCopy, showCopySuccess} from './copy-feedback.js';
 import {analyticsEnabled, setAnalyticsEnabled, count as analyticsCount, transferReceived} from './analytics.js';
 import {isIOS, imageType, shareImage} from './image-save.js';
 import {createFolderBrowser} from './folders.js';
@@ -56,7 +57,7 @@ function renderDevices() {
     forget.onclick = () => { devices = devices.filter(d => d.id !== device.id); saveDevices(); renderDevices(); };
     row.append(connect,forget); list.append(row);
   }
-  if (selectedDevice) { $('remembered-status').textContent = `Waiting for ${selectedDevice.name}. Open the app there and connect to this device.`; $('cancel-remembered').hidden = false; $('pairing').hidden = true; }
+  if (selectedDevice) { $('remembered-status').textContent = `Waiting for ${selectedDevice.name}. Open the app on the ${selectedDevice.name} and click "Connect to ${deviceType()}".`; $('cancel-remembered').hidden = false; $('pairing').hidden = true; }
 }
 $('cancel-remembered').onclick = () => location.replace(location.pathname + location.search);
 renderDevices();
@@ -136,7 +137,7 @@ $('cancel-connection').onclick = () => {
   location.replace(location.pathname + location.search);
 };
 const files = new Map(), incoming = new Set(), discarded = new Set();
-function notify(message) { $('notice').textContent = message; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => $('notice').textContent = '', 6000); }
+function notify(message, isError = false) { $('notice').classList.toggle('copy-error-message', isError); $('notice').textContent = message; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => $('notice').textContent = '', 6000); }
 function deviceType() {
   const ua = navigator.userAgent, platform = navigator.userAgentData?.platform || navigator.platform || '';
   if (/iPad/i.test(ua) || (platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'iPad';
@@ -164,7 +165,7 @@ function render() {
     } else { const icon = document.createElement('i'); icon.className = `fa-regular ${iconFor(file)}`; thumb.append(icon); }
     const name = document.createElement('button'); name.type = 'button'; name.className = 'filename'; name.title = file.name; name.setAttribute('aria-label', `Preview ${file.name}`); name.onclick = () => void openPreview(file.name, async () => file); const dot = file.name.lastIndexOf('.'); const stem = document.createElement('span'); stem.className = 'stem'; stem.textContent = dot > 0 ? file.name.slice(0,dot) : file.name; const ext = document.createElement('span'); ext.className = 'ext'; ext.textContent = dot > 0 ? file.name.slice(dot) : ''; name.append(stem,ext);
     const size = document.createElement('div'); size.className = 'filesize'; size.textContent = `${formatSize(file.size)}${status ? ` · ${status}` : ''}`;
-    const actions = document.createElement('div'); actions.className = 'card-actions'; const copy = document.createElement('button'); copy.innerHTML = '<i class="fa-regular fa-copy" aria-hidden="true"></i>'; copy.setAttribute('aria-label', `Copy ${file.name}`); copy.title = 'Copy'; copy.onclick = () => copyFile(file);
+    const actions = document.createElement('div'); actions.className = 'card-actions'; const copy = document.createElement('button'); prepareCopyButton(copy); copy.setAttribute('aria-label', `Copy ${file.name}`); copy.title = 'Copy'; copy.onclick = async () => { const started = startCopy(copy); let success = false; try { success = await copyFile(file); } finally { finishCopy(copy, started, success); } };
     const download = document.createElement('button'); download.innerHTML = '<i class="fa-solid fa-download" aria-hidden="true"></i>'; download.setAttribute('aria-label', `Download ${file.name}`); download.title = 'Download'; download.onclick = () => { if (isIOS() && imageType(file)) { shareImage(file, () => void openPreview(file.name, async () => file), notify); return; } const a = document.createElement('a'); a.href = url; a.download = file.name; a.click(); };
     if (file.type === 'text/plain' && file.name === 'Pasted text.txt') {
       file.text().then(text => {
@@ -183,12 +184,12 @@ function render() {
 async function copyFile(file, report = notify) {
   try {
     if (!navigator.clipboard?.write || !window.ClipboardItem) throw new Error('Clipboard file copying is unavailable in this browser.');
-    if (file.type.startsWith('text/')) { await navigator.clipboard.writeText(await file.text()); report(`Copied ${file.name} to the clipboard.`); return; }
+    if (file.type.startsWith('text/')) { await navigator.clipboard.writeText(await file.text()); report(`Copied ${file.name} to the clipboard.`); return true; }
     let blob = file;
     // Clipboard implementations commonly accept PNG images but not JPEG or GIF.
     if (file.type.startsWith('image/') && file.type !== 'image/png') { const image = await createImageBitmap(file); const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height; canvas.getContext('2d').drawImage(image,0,0); image.close(); blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png')); if (!blob) throw new Error('Could not copy this image.'); }
-    const type = blob.type || 'application/octet-stream'; await navigator.clipboard.write([new ClipboardItem({[type]:blob})]); report(`Copied ${file.name} to the clipboard.`);
-  } catch (error) { report(`${error.message || 'This file type cannot be copied in this browser.'} Try Download instead.`); }
+    const type = blob.type || 'application/octet-stream'; await navigator.clipboard.write([new ClipboardItem({[type]:blob})]); report(`Copied ${file.name} to the clipboard.`); return true;
+  } catch (error) { report(`${error.message || 'This file type cannot be copied in this browser.'} Try Download instead.`, true); }
 }
 function addFile(id, file, status = '') { if (files.has(id)) return; files.set(id,{file,url:URL.createObjectURL(file),status}); render(); }
 function clearFiles() { pendingClipboard = null; epoch++; for (const id of incoming) discarded.add(id); incoming.clear(); for (const item of files.values()) URL.revokeObjectURL(item.url); files.clear(); render(); }
@@ -246,13 +247,16 @@ $('dropzone').addEventListener('drop',e => {
 });
 $('download-all').onclick = () => { for (const {file, url} of files.values()) { const a = document.createElement('a'); a.href = url; a.download = file.name; a.click(); } };
 $('clear').onclick = () => { if (!connected) return; clearFiles(); sendControl({type:'clear'}); };
-$('copy-link').onclick = async () => { try { await navigator.clipboard.writeText(pairURL.href); notify('Connection link copied.'); } catch { notify('Select the link to copy it.'); } };
+prepareCopyButton($('copy-link'));
+$('copy-link').onclick = async () => { try { await navigator.clipboard.writeText(pairURL.href); showCopySuccess($('copy-link')); notify('Connection link copied.'); } catch { notify('Select the link to copy it.'); } };
 let shareAppTimer;
 $('share-app').onclick = async () => { try { await navigator.clipboard.writeText('https://synccopypaste.app'); $('share-app-status').textContent = 'App link copied'; } catch { $('share-app-status').textContent = 'Could not copy link'; } clearTimeout(shareAppTimer); shareAppTimer = setTimeout(() => { $('share-app-status').textContent = ''; }, 4000); };
 const menu = $('menu'); $('menu-button').onclick = () => { menu.hidden = !menu.hidden; $('menu-button').setAttribute('aria-expanded',String(!menu.hidden)); };
 document.addEventListener('click', e => { if (!$('menu-button').contains(e.target) && !menu.contains(e.target)) { menu.hidden = true; $('menu-button').setAttribute('aria-expanded','false'); } });
 $('how-button').onclick = () => { menu.hidden = true; $('menu-button').setAttribute('aria-expanded','false'); $('how-dialog').showModal(); };
 $('about-button').onclick = () => { menu.hidden = true; $('menu-button').setAttribute('aria-expanded','false'); $('about-dialog').showModal(); };
+const requestedDialog = new URLSearchParams(location.search).get('dialog');
+if (requestedDialog === 'about' || requestedDialog === 'how') { $(requestedDialog === 'about' ? 'about-button' : 'how-button').click(); }
 try {
   const endpoint = new URL(FEEDBACK_ENDPOINT);
   if (endpoint.protocol === 'https:' && endpoint.hostname === 'script.google.com' && /^\/macros\/s\/[^/]+\/exec$/.test(endpoint.pathname)) {

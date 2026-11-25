@@ -1,3 +1,4 @@
+import {prepareCopyButton, startCopy, finishCopy} from './copy-feedback.js';
 import {isIOS, imageType} from './image-save.js';
 // Folder handles stay on the device that selected them; the peer receives only
 // requested directory metadata and explicitly requested file contents.
@@ -898,16 +899,18 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     const actions = document.createElement('div'); actions.className = 'folder-item-actions';
     for (const action of item.kind === 'directory' ? ['download'] : ['copy','download']) {
       const button = document.createElement('button'); button.type = 'button'; button.title = action === 'copy' ? 'Copy' : 'Download'; button.setAttribute('aria-label',`${button.title} ${item.name}`);
-      const icon = document.createElement('i'); icon.className = action === 'copy' ? 'fa-regular fa-copy' : 'fa-solid fa-download'; icon.setAttribute('aria-hidden','true'); button.append(icon);
+      const icon = document.createElement('i'); icon.className = action === 'copy' ? 'fa-regular fa-copy' : 'fa-solid fa-download'; icon.setAttribute('aria-hidden','true'); button.append(icon); if (action === 'copy') prepareCopyButton(button);
       button.onclick = async () => {
+        const started = action === 'copy' ? startCopy(button) : 0; let copied = false;
         const generation = remoteGeneration; message.textContent = `Fetching ${item.name}…`;
         try {
           if (action === 'download' && item.kind === 'file' && isIOS() && imageType({name:item.name,type:item.type || ''})) { void openPreview(item.name, () => request('file',item.path,undefined,which)); message.textContent = ''; return; }
           const file = item.kind === 'directory' ? await folderArchive(item,which,text => { message.textContent = text; }) : await request('file',item.path,undefined,which);
           if (source !== 'split' || generation !== remoteGeneration || !isConnected()) throw new Error('The shared folder is no longer available.');
-          if (action === 'copy') await copyFile(file); else downloadFile(file);
+          if (action === 'copy') copied = await copyFile(file); else downloadFile(file);
           if (message.isConnected) message.textContent = '';
         } catch (error) { if (message.isConnected) message.textContent = error.message; }
+        finally { if (action === 'copy') finishCopy(button, started, copied); }
       };
       actions.append(button);
     }
@@ -946,7 +949,7 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     if (generation !== remoteGeneration || !isConnected() || source !== 'remote') throw new Error('The shared folder is no longer available.');
     recordTransfer(file.size,Math.max(1,performance.now() - started)); return file;
   }
-  async function fileAction(item, action) {
+  async function fileAction(item, action, button) {
     if (item.kind === 'directory') { status(`Fetching ${item.name}…`); try { downloadFile(await folderArchive(item,'remote',status,true)); status(''); } catch (error) { status(error.message); } return; }
     if (action === 'download' && source === 'remote' && item.size >= STREAM_THRESHOLD && window.showSaveFilePicker) {
       const generation = remoteGeneration;
@@ -957,18 +960,20 @@ export function createFolderBrowser({send, sendBytes, isConnected, getPeer, getD
     if (action === 'share' && isConnected()) sendMessage({type:'folder-show-shared'});
     if (action === 'download' && isIOS() && imageType({name:item.name, type:item.type || ''})) { void openPreview(item.name, () => fetchDownloadFile(item)); return; }
     const generation = remoteGeneration;
+    const started = action === 'copy' ? startCopy(button) : 0; let copied = false;
     status(`Fetching ${item.name}…`);
     try {
       const file = action === 'download' && source === 'remote' ? await fetchDownloadFile(item) : await request('file',item.path);
       if (generation !== remoteGeneration || !isConnected()) throw new Error('The shared folder is no longer available.');
       if (action === 'share') { await shareFile(file); status(''); }
-      else if (action === 'copy') { await copyFile(file); status(''); }
+      else if (action === 'copy') { copied = await copyFile(file); status(''); }
       else { const url = URL.createObjectURL(file), a = document.createElement('a'); a.href = url; a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(url),60000); status(''); }
     } catch (error) { status(error.message); }
+    finally { if (action === 'copy') finishCopy(button, started, copied); }
   }
   function actionButtons(item) {
     const actions = document.createElement('div'); actions.className = 'folder-item-actions';
-    for (const [action,icon] of (item.kind === 'directory' ? [['download','fa-solid fa-download']] : source === 'local' ? [['share','fa-solid fa-arrow-right']] : [['copy','fa-regular fa-copy'],['download','fa-solid fa-download']])) { const button = document.createElement('button'); button.type = 'button'; button.title = action === 'share' ? 'Share' : action === 'copy' ? 'Copy' : 'Download'; button.setAttribute('aria-label',`${button.title} ${item.name}`); const i = document.createElement('i'); i.className = icon; i.setAttribute('aria-hidden','true'); if (action === 'share') button.append('Share ', i); else button.append(i); button.onclick = () => void fileAction(item,action); actions.append(button); }
+    for (const [action,icon] of (item.kind === 'directory' ? [['download','fa-solid fa-download']] : source === 'local' ? [['share','fa-solid fa-arrow-right']] : [['copy','fa-regular fa-copy'],['download','fa-solid fa-download']])) { const button = document.createElement('button'); button.type = 'button'; button.title = action === 'share' ? 'Share' : action === 'copy' ? 'Copy' : 'Download'; button.setAttribute('aria-label',`${button.title} ${item.name}`); const i = document.createElement('i'); i.className = icon; i.setAttribute('aria-hidden','true'); if (action === 'share') button.append('Share ', i); else button.append(i); if (action === 'copy') prepareCopyButton(button); button.onclick = () => void fileAction(item,action,button); actions.append(button); }
     return actions;
   }
   function previewFile(item) { void openPreview(item.name, () => request('file', item.path)); }

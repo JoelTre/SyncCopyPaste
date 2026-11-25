@@ -4,8 +4,8 @@ const dialog = $('preview-dialog'), body = $('preview-body');
 let generation = 0, imageURL = null, mammothPromise, highlightPromise, currentFile = null, copyHandler;
 const unsupported = 'A preview cannot be displayed for this file type.';
 export function setPreviewCopyHandler(handler) { copyHandler = handler; }
-function release() { generation++; if (imageURL) URL.revokeObjectURL(imageURL); imageURL = null; currentFile = null; $('preview-copy').disabled = true; $('preview-download').disabled = true; $('preview-status').textContent = ''; body.replaceChildren(); }
-$('preview-copy').onclick = () => { if (currentFile && copyHandler) void copyHandler(currentFile, text => { $('preview-status').textContent = text; }); };
+function release() { generation++; if (imageURL) URL.revokeObjectURL(imageURL); imageURL = null; currentFile = null; $('preview-copy').disabled = true; $('preview-download').disabled = true; $('preview-status').textContent = ''; $('preview-status').classList.remove('copy-error-message'); body.replaceChildren(); }
+$('preview-copy').onclick = () => { if (currentFile && copyHandler) void copyHandler(currentFile, (text, isError = false) => { $('preview-status').classList.toggle('copy-error-message', isError); $('preview-status').textContent = text; }); };
 $('preview-download').onclick = () => { if (!currentFile) return; if (isIOS() && imageType(currentFile)) { shareImage(currentFile, () => { $('preview-status').textContent = 'Touch and hold the image to save it.'; }, text => { $('preview-status').textContent = text; }); return; } const url = URL.createObjectURL(currentFile), link = document.createElement('a'); link.href = url; link.download = currentFile.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); };
 $('close-preview').onclick = () => dialog.close();
 dialog.addEventListener('close', release);
